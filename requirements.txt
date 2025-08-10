@@ -12,7 +12,7 @@ python-docx==1.1.2
 python-pptx==0.6.21
 pytesseract==0.3.10
 openpyxl==3.1.2
-Pillow==10.0.0
+Pillow==11.3.0
 
 # AI and ML dependencies
 google-ai-generativelanguage==0.6.10
