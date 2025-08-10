@@ -115,7 +115,7 @@ Health check endpoint for monitoring.
     Vector-query Pinecone for the `top_k` (configurable) results for each rephrased query, merge results, and deduplicate candidate chunks.
 
 14. **Rerank**  
-    Rerank the deduplicated chunks against the original query (primary: BGE, fallback: Cohere) and select the `top_n` chunks (configurable).
+    Rerank the deduplicated chunks against the original query (primary: BGE (`bge-reranker-v2-m3`), fallback: cohere (`rerank-v3.5`)) and select the `top_n` chunks (configurable).
 
 15. **Final LLM call**  
     Send the `top_n` chunks as context to the final LLM (primary: Gemini, fallback: Groq) using prompt templates in `prompts.json`. We also provide a tool/function for the LLM to make external API calls when needed for specific queries.
@@ -133,7 +133,7 @@ Health check endpoint for monitoring.
 - **Repo history:** The repo was originally hosted on Hugging Face: `https://huggingface.com/couldbeharshith/insurance-agent`. We migrated to GitHub for convenience; prior commits and the working HF endpoint are still available there.  
 - **Live endpoint (Hugging Face Spaces):**  
   `https://couldbeharshith-insurance-agent.hf.space/api/v1/hackrx/run`
-- **API Keys:** all of our free API keys are in the .env
+- **API Keys:** all of our free API keys are in the .env. *If you want to use a single API key, just copy paste the SAME API key for all API key variables in `.env`*
 
 
 ---
