@@ -54,40 +54,6 @@ Process insurance policy documents and answer questions.
 
 Health check endpoint for monitoring.
 
-## Authentication
-
-All API endpoints require Bearer token authentication:
-
-```
-Authorization: Bearer YOUR_API_TOKEN
-```
-
-## Environment Variables
-
-Required environment variables:
-
-- `GEMINI_API_KEY`: Google Gemini API key
-- `PINECONE_API_KEY`: Pinecone API key
-- `PINECONE_INDEX_NAME`: Pinecone index name
-- `API_TOKEN`: Bearer token for authentication
-
-Optional configuration:
-
-- `USE_MARKDOWN_EXTRACTION`: Enable markdown extraction from PDFs (default: true)
-
-## Usage
-
-1. Set up your environment variables
-2. Deploy to Hugging Face Spaces
-3. Make API calls with proper authentication
-
-## Response Format
-
-- **Length**: 10-100 words (flexible for complex queries)
-- **Language**: Simple, easy-to-understand
-- **Citations**: Inline format like (Page 5, Line 12)
-- **Decisions**: Includes APPROVED/REJECTED/NEEDS REVIEW for claim queries
-
 ## Supported Document Types
 
 - PDF files
@@ -95,12 +61,16 @@ Optional configuration:
 - Plain text files (.txt)
 - Email files (.eml)
 
-## Performance
+# Steps of processing (processing pipeline)
+- Step 1
+- Step 2
+will be updated.
 
-- **Latency**: < 30 seconds for document processing
-- **Concurrency**: Supports multiple parallel requests
-- **Caching**: Document-level caching for faster repeated queries
+# Note to the evaluators / testers
+1. most of our global settings can be configured in the .env file.
+2. we use multiple gemini, groq, pinecone and groq API keys by cycling through the primary service's keys one by one and using the secondary service's keys if the primary fails. we do this to distribute the workload of the API calls among multiple API providers and to avoid hitting the free tier rate limits.
+3. the repo was original hosted on hugging face @ https://huggingface.com/couldbeharshith/insurance-agent but we have moved it to github for your convinience. all previous commits can be found on the hugging face repo along with the working endpoint URL that is hosted on hugging face spaces below
 
-
+our API endpoint URL - https://couldbeharshith-insurance-agent.hf.space/api/v1/hackrx/run
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
