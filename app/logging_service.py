@@ -111,11 +111,6 @@ class LoggingService:
         # Return empty list as file-based functionality is disabled
         return []
     
-    async def cleanup_old_logs(self, days_to_keep: int = 30):
-        """No-op since file-based log cleanup is disabled."""
-        # No-op as file-based functionality is disabled
-        logger.info("Log cleanup skipped - file logging disabled")
-    
     def get_status(self) -> Dict[str, Any]:
         """Get logging service status - console-only mode."""
         return {

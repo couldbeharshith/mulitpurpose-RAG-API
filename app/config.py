@@ -144,7 +144,7 @@ class Config:
     PLATFORM: str = os.getenv("PLATFORM", "local")  # vercel, railway, huggingface, or local
     
     # ==================== PERFORMANCE CONFIGURATION ====================
-    MAX_CONCURRENT_REQUESTS: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "10"))
+    MAX_CONCURRENT_REQUESTS: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "25"))
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "200"))  # Increased to 200 seconds
     MAX_DOCUMENT_SIZE_MB: int = int(os.getenv("MAX_DOCUMENT_SIZE_MB", "1024"))  # Increased to 1GB
     MAX_QUESTIONS_PER_REQUEST: int = int(os.getenv("MAX_QUESTIONS_PER_REQUEST", "50"))

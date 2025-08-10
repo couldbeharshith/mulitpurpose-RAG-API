@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from datetime import datetime, timezone
-import os
 import logging
 import time
 import uuid
@@ -17,23 +16,19 @@ from contextlib import asynccontextmanager
 
 from app.config import Config
 from app.models import HackRXRequest, HackRXResponse, ErrorResponse
-from app.consolidated_services import (
+from app.services import (
     DocumentService,
     VectorService,
     LLMService,
     RelevanceService,
     QueryExpansionService,
 )
-from app.essential_utils import (
-    async_retry,
+from app.utils import (
     sanitize_input,
     validate_bearer_token,
     log_performance_metrics,
 )
-from app.middleware.logging_middleware import LoggingMiddleware
-from app.logging_service import logging_service
 
-# Configure logging (only if not already configured)
 if not logging.getLogger().handlers:
     logging.basicConfig(
         level=getattr(logging, Config.LOG_LEVEL), format=Config.LOG_FORMAT
@@ -51,28 +46,6 @@ vector_service = VectorService()
 llm_service = LLMService()
 relevance_service = RelevanceService()
 query_expansion_service = QueryExpansionService()
-
-
-async def periodic_log_cleanup():
-    """
-    Background task for periodic log cleanup.
-    Runs every 24 hours to clean up old log files.
-    """
-    while True:
-        try:
-            # Wait 24 hours between cleanups
-            await asyncio.sleep(24 * 60 * 60)  # 24 hours
-
-            logger.info("Starting periodic log cleanup")
-            await logging_service.cleanup_old_logs()
-            logger.info("Periodic log cleanup completed")
-
-        except asyncio.CancelledError:
-            logger.info("Log cleanup task cancelled")
-            break
-        except Exception as e:
-            logger.error(f"Error in periodic log cleanup: {e}")
-            # Continue running even if cleanup fails
 
 
 # Define lifespan context manager
@@ -105,23 +78,9 @@ async def lifespan(app: FastAPI):
         f"Direct Gemini upload enabled for supported file types < {Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB}MB (PDF, text, HTML, images, audio, video)"
     )
 
-    # Log startup completion
     logger.info("Application startup complete and ready to serve requests")
 
-    # Start background task for log cleanup
-    cleanup_task = asyncio.create_task(periodic_log_cleanup())
-
     yield
-
-    # Cancel cleanup task on shutdown
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-
-    # Shutdown
-    logger.info("Application shutdown initiated")
 
     logger.info("Application shutdown complete")
 
@@ -141,9 +100,6 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_url="/openapi.json" if debug_mode else None,
 )
-
-# Add logging middleware first (for request tracking)
-app.add_middleware(LoggingMiddleware)
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
@@ -201,40 +157,6 @@ async def security_middleware(request: Request, call_next):
         )
 
     return response
-
-
-# Add trusted host middleware
-if not Config.DEBUG:
-    # Configure allowed hosts based on platform
-    if Config.PLATFORM == "vercel":
-        allowed_hosts = [
-            "*.vercel.app",
-            "localhost",
-            "127.0.0.1",
-            "0.0.0.0",
-            "testserver",
-        ]
-    elif Config.PLATFORM == "railway":
-        allowed_hosts = [
-            "*.railway.app",
-            "localhost",
-            "127.0.0.1",
-            "0.0.0.0",
-            "testserver",
-        ]
-    elif Config.PLATFORM == "huggingface":
-        allowed_hosts = [
-            "*.hf.space",
-            "*.huggingface.co",
-            "localhost",
-            "127.0.0.1",
-            "0.0.0.0",
-            "testserver",
-        ]
-    else:
-        allowed_hosts = ["*"]  # Local development
-
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 
 # Authentication dependency
@@ -555,9 +477,80 @@ async def hackrx_run(
                     f"Processed new document into namespace: {document_result.namespace} with {len(document_result.chunks)} chunks"
                 )
 
+        # Step 1: Batch process all relevance checks in parallel
+        logger.info("Starting relevance checks for all questions...")
+        relevance_tasks = [
+            relevance_service.check_query_relevance(
+                question, i + 1, document_result.namespace, use_semaphore=False
+            )
+            for i, question in enumerate(sanitized_questions)
+        ]
+        relevance_results = await asyncio.gather(
+            *relevance_tasks, return_exceptions=True
+        )
+
+        # Step 2: Batch process query expansion for all relevant questions in parallel
+        logger.info("Starting query expansion for all relevant questions...")
+        expansion_tasks = []
+        question_to_expansion_map = {}
+
+        # Get available Groq keys for distribution
+        available_groq_keys = []
+        if (
+            query_expansion_service.groq_key_manager
+            and query_expansion_service.groq_key_manager.api_keys
+        ):
+            available_groq_keys = (
+                query_expansion_service.groq_key_manager.api_keys.copy()
+            )
+
+        for i, (question, relevance_result) in enumerate(
+            zip(sanitized_questions, relevance_results)
+        ):
+            if isinstance(relevance_result, Exception) or not relevance_result:
+                # Skip expansion for irrelevant questions
+                question_to_expansion_map[i] = [question]
+            else:
+                # Pre-assign API key to avoid lock contention
+                assigned_key = (
+                    available_groq_keys[i % len(available_groq_keys)]
+                    if available_groq_keys
+                    else None
+                )
+
+                # Create expansion task for relevant questions (without semaphore for batch processing)
+                expansion_tasks.append(
+                    (
+                        i,
+                        query_expansion_service._generate_with_groq_direct(
+                            question, assigned_key
+                        ),
+                    )
+                )
+
+        # Execute all expansion tasks in parallel
+        if expansion_tasks:
+            expansion_indices, expansion_coroutines = zip(*expansion_tasks)
+            expansion_results = await asyncio.gather(
+                *expansion_coroutines, return_exceptions=True
+            )
+
+            # Map results back to questions
+            for idx, result in zip(expansion_indices, expansion_results):
+                if isinstance(result, Exception):
+                    logger.debug(f"Query expansion failed for Q{idx + 1}: {result}")
+                    question_to_expansion_map[idx] = [sanitized_questions[idx]]
+                else:
+                    question_to_expansion_map[idx] = result
+
+        # Fill in any missing mappings
+        for i in range(len(sanitized_questions)):
+            if i not in question_to_expansion_map:
+                question_to_expansion_map[i] = [sanitized_questions[i]]
+
         # Define async function to process individual questions
         async def process_single_question(question: str, question_index: int) -> str:
-            """Enhanced question processing with multi-query support."""
+            """Enhanced question processing with pre-computed query expansion."""
             question_start_time = time.time()
 
             try:
@@ -565,12 +558,9 @@ async def hackrx_run(
                     f"Processing question {question_index + 1}: {question[:100]}..."
                 )
 
-                # Step 1: Relevance check (unchanged)
-                relevance_result = await relevance_service.check_query_relevance(
-                    question, question_index + 1, document_result.namespace
-                )
-
-                if not relevance_result:
+                # Step 1: Use pre-computed relevance check
+                relevance_result = relevance_results[question_index]
+                if isinstance(relevance_result, Exception) or not relevance_result:
                     logger.info(f"Q{question_index + 1}: Not relevant to document")
                     return "This question is not relevant to the provided document content."
 
@@ -591,20 +581,11 @@ async def hackrx_run(
                         logger.info(
                             f"Namespace {document_result.namespace} not ready, waiting for indexing..."
                         )
-                        await asyncio.sleep(2)  # Additional wait if needed
+                        await asyncio.sleep(1)  # Reduced wait time
 
-                # Step 2: Multi-query generation (NEW - only for relevant queries)
+                # Step 2: Use pre-computed diverse queries
                 logger.info(f"📝 Q{question_index + 1}: {question}")
-
-                try:
-                    diverse_queries = (
-                        await query_expansion_service.generate_diverse_queries(question)
-                    )
-                except Exception as e:
-                    logger.debug(
-                        f"Query expansion failed for Q{question_index + 1}: {e}"
-                    )
-                    diverse_queries = [question]
+                diverse_queries = question_to_expansion_map[question_index]
 
                 # Step 3: Multi-query vector search with integrated reranking
                 final_chunks = []
@@ -627,7 +608,9 @@ async def hackrx_run(
                 if not final_chunks:
                     try:
                         search_result = await vector_service.search_documents(
-                            query=question, namespace=document_result.namespace
+                            query=question,
+                            namespace=document_result.namespace,
+                            use_semaphore=False,
                         )
                         # For single query, apply reranking if we have chunks
                         if search_result.chunks:
@@ -658,12 +641,14 @@ async def hackrx_run(
                         logger.info(
                             "Retrying search after additional wait for indexing..."
                         )
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(1)  # Reduced retry wait time
 
                         # Retry with single query search
                         try:
                             search_result = await vector_service.search_documents(
-                                query=question, namespace=document_result.namespace
+                                query=question,
+                                namespace=document_result.namespace,
+                                use_semaphore=False,
                             )
                             if search_result.chunks:
                                 final_chunks = await vector_service.rerank_chunks_with_original_query(
@@ -680,11 +665,13 @@ async def hackrx_run(
                             )
                             final_chunks = []
 
-                # Step 5: LLM response generation (unchanged)
+                # Step 5: LLM response generation (without semaphore for batch processing)
                 if final_chunks:
                     try:
                         answer = await llm_service.generate_answer(
-                            question=question, context_chunks=final_chunks
+                            question=question,
+                            context_chunks=final_chunks,
+                            use_semaphore=False,
                         )
                     except Exception as e:
                         logger.error(
@@ -716,9 +703,19 @@ async def hackrx_run(
             f"Starting parallel processing of {len(sanitized_questions)} questions"
         )
 
+        # Create a semaphore to limit concurrent question processing
+        question_semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_REQUESTS)
+
+        async def process_question_with_semaphore(
+            question: str, question_index: int
+        ) -> str:
+            """Wrapper to process question with semaphore control."""
+            async with question_semaphore:
+                return await process_single_question(question, question_index)
+
         # Create tasks for parallel execution of all questions
         question_tasks = [
-            process_single_question(question, i)
+            process_question_with_semaphore(question, i)
             for i, question in enumerate(sanitized_questions)
         ]
 
@@ -825,187 +822,6 @@ async def root():
     return response_data
 
 
-@app.get("/admin/logs")
-async def admin_logs(
-    limit: int = 100,
-    offset: int = 0,
-    log_type: str = "all",
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    request_id: Optional[str] = None,
-    authorization: Optional[str] = Header(None),
-):
-    """
-    Admin endpoint for accessing system logs with pagination and filtering.
-
-    Args:
-        limit: Maximum number of logs to return (default: 100, max: 1000)
-        offset: Number of logs to skip for pagination (default: 0)
-        log_type: Type of logs to retrieve ('requests', 'responses', 'system', 'all')
-        start_time: Filter logs after this ISO timestamp
-        end_time: Filter logs before this ISO timestamp
-        request_id: Filter by specific request ID
-        authorization: Bearer token for authentication
-
-    Returns:
-        Paginated log entries with metadata
-    """
-    try:
-        # Verify authentication
-        await verify_bearer_token(authorization)
-
-        # Validate parameters
-        limit = min(max(1, limit), 1000)  # Limit between 1 and 1000
-        offset = max(0, offset)
-
-        if log_type not in ["requests", "responses", "system", "all"]:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error_type": "ValidationError",
-                    "message": "Invalid log_type. Must be one of: requests, responses, system, all",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-
-        # Parse time filters
-        parsed_start_time = None
-        parsed_end_time = None
-
-        if start_time:
-            try:
-                parsed_start_time = datetime.fromisoformat(
-                    start_time.replace("Z", "+00:00")
-                )
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error_type": "ValidationError",
-                        "message": "Invalid start_time format. Use ISO 8601 format.",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-
-        if end_time:
-            try:
-                parsed_end_time = datetime.fromisoformat(
-                    end_time.replace("Z", "+00:00")
-                )
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error_type": "ValidationError",
-                        "message": "Invalid end_time format. Use ISO 8601 format.",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-
-        # Get logs from LoggingService
-        log_response = await logging_service.get_logs(
-            limit=limit,
-            offset=offset,
-            log_type=log_type,
-            start_time=parsed_start_time,
-            end_time=parsed_end_time,
-            request_id=request_id,
-        )
-
-        # Return structured response
-        return {
-            "logs": log_response.logs,
-            "pagination": {
-                "total_count": log_response.total_count,
-                "page": log_response.page,
-                "per_page": log_response.per_page,
-                "has_next": log_response.has_next,
-                "has_prev": log_response.has_prev,
-                "offset": offset,
-                "limit": limit,
-            },
-            "filters": {
-                "log_type": log_type,
-                "start_time": start_time,
-                "end_time": end_time,
-                "request_id": request_id,
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-    except HTTPException:
-        # Re-raise HTTP exceptions (like authentication failures)
-        raise
-
-    except Exception as e:
-        logger.error(f"Admin logs endpoint failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_type": type(e).__name__,
-                "message": "Failed to retrieve logs",
-                "details": str(e),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-
-
-@app.get("/admin/health")
-async def admin_health(authorization: Optional[str] = Header(None)):
-    """
-    Admin endpoint for system health monitoring including logging system status.
-
-    Args:
-        authorization: Bearer token for authentication
-
-    Returns:
-        Comprehensive system health information
-    """
-    try:
-        # Verify authentication
-        await verify_bearer_token(authorization)
-
-        # Get basic health info
-        config_summary = Config.get_config_summary()
-
-        # Get logging system health
-        logging_health = logging_service.get_system_health()
-
-        return {
-            "status": "healthy",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "platform": Config.PLATFORM,
-            "version": app_version,
-            "serverless": Config.is_serverless(),
-            "config": {
-                "gemini_model": config_summary.get("gemini_model"),
-                "groq_model": config_summary.get("groq_model"),
-                "primary_llm_service": config_summary.get("primary_llm_service"),
-                "gemini_keys_count": config_summary.get("gemini_keys_count"),
-                "groq_keys_count": config_summary.get("groq_keys_count"),
-                "embedding": "Pinecone built-in",
-                "pinecone_index": config_summary.get("pinecone_index"),
-                "max_document_size_mb": config_summary.get("max_document_size_mb"),
-            },
-            "logging_system": logging_health,
-        }
-
-    except HTTPException:
-        # Re-raise HTTP exceptions (like authentication failures)
-        raise
-
-    except Exception as e:
-        logger.error(f"Admin health check failed: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-
-
 @app.get("/health")
 async def health_check():
     """
@@ -1043,30 +859,16 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
 
-    # Platform-specific server configuration
-    if Config.PLATFORM == "vercel":
-        # Vercel handles the server - this is mainly for local testing
-        logger.info("Running in Vercel mode - server handled by platform")
-        host = "127.0.0.1"
-        port = 8000
-        workers = 1  # Single worker for serverless simulation
-    elif Config.PLATFORM == "railway":
-        # Railway container deployment
+    if Config.PLATFORM == "huggingface":
         host = "0.0.0.0"
-        port = int(os.getenv("PORT", Config.PORT))  # Railway provides PORT
-        workers = 1  # Single worker for container
-    elif Config.PLATFORM == "huggingface":
-        # Hugging Face Spaces deployment
-        host = "0.0.0.0"
-        port = 7860  # Standard Hugging Face Spaces port
-        workers = 1  # Single worker for container
+        port = 7860
+        workers = 1
     else:
         # Local development
         host = Config.HOST
         port = Config.PORT
         workers = 1
 
-    # Configure concurrency based on platform limits
     limit_concurrency = Config.MAX_CONCURRENT_REQUESTS
 
     logger.info(f"Starting uvicorn server:")

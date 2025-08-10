@@ -9,7 +9,7 @@ import re
 from urllib.parse import urlparse
 
 
-# ==================== CORE DATA MODELS ====================
+# CORE DATA MODELS
 
 class ChunkMetadata(BaseModel):
     """Metadata for document chunks with citation information."""
@@ -73,7 +73,7 @@ class RelevantChunk(BaseModel):
     distance: float = Field(..., description="Vector distance from query")
 
 
-# ==================== API REQUEST/RESPONSE MODELS ====================
+# API REQUEST/RESPONSE MODELS
 
 class QueryRequest(BaseModel):
     """Request model for query processing endpoint."""
@@ -139,7 +139,7 @@ class ErrorResponse(BaseModel):
     request_id: str = Field(..., description="Unique identifier for the request")
 
 
-# ==================== HACKRX API MODELS ====================
+# HACKRX API MODELS
 
 class HackRXRequest(BaseModel):
     """Request model for HackRX API endpoint."""
@@ -234,7 +234,7 @@ class RelevanceResponse(BaseModel):
     answers: List[str] = Field(default=["the query is not relevant to use case of this API"])
 
 
-# ==================== SERVICE INTERFACE MODELS ====================
+# SERVICE INTERFACE MODELS
 
 class DocumentProcessingRequest(BaseModel):
     """Request model for document processing service."""
@@ -301,7 +301,7 @@ class RelevanceCheckResult(BaseModel):
     processing_time: float = Field(..., description="Time taken for relevance check")
 
 
-# ==================== BATCH PROCESSING MODELS ====================
+# BATCH PROCESSING MODELS
 
 class BatchProcessingRequest(BaseModel):
     """Request model for batch processing operations."""
@@ -319,7 +319,7 @@ class BatchProcessingResult(BaseModel):
     errors: List[str] = Field(default_factory=list, description="List of errors encountered")
 
 
-# ==================== LLM KEY MANAGEMENT MODELS ====================
+# LLM KEY MANAGEMENT MODELS
 
 class APIKeyHealthResponse(BaseModel):
     """API response model for API key health information."""
@@ -347,7 +347,7 @@ class LLMServiceHealthResponse(BaseModel):
     success_rate: float = Field(..., description="Overall success rate percentage")
 
 
-# ==================== PERFORMANCE MONITORING MODELS ====================
+# PERFORMANCE MONITORING MODELS
 
 class PerformanceMetrics(BaseModel):
     """Model for performance metrics tracking."""

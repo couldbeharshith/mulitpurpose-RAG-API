@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from app.models import ErrorResponse
 
 
-# ==================== BASE EXCEPTION CLASSES ====================
+# BASE EXCEPTION CLASSES
 
 class InsuranceRAGException(Exception):
     """
@@ -57,7 +57,7 @@ class InsuranceRAGException(Exception):
         )
 
 
-# ==================== DOCUMENT PROCESSING EXCEPTIONS ====================
+# DOCUMENT PROCESSING EXCEPTIONS
 
 class DocumentProcessingError(InsuranceRAGException):
     """
@@ -164,7 +164,7 @@ class DocumentSizeError(DocumentProcessingError):
         )
 
 
-# ==================== VECTOR DATABASE EXCEPTIONS ====================
+# VECTOR DATABASE EXCEPTIONS
 
 class VectorSearchError(InsuranceRAGException):
     """
@@ -294,7 +294,7 @@ class NamespaceError(VectorSearchError):
         )
 
 
-# ==================== LLM PROCESSING EXCEPTIONS ====================
+# LLM PROCESSING EXCEPTIONS
 
 class LLMProcessingError(InsuranceRAGException):
     """
@@ -398,7 +398,7 @@ class TokenLimitError(LLMProcessingError):
         )
 
 
-# ==================== RELEVANCE FILTERING EXCEPTIONS ====================
+# RELEVANCE FILTERING EXCEPTIONS
 
 class RelevanceFilterError(InsuranceRAGException):
     """
@@ -476,7 +476,7 @@ class RelevanceThresholdError(RelevanceFilterError):
         )
 
 
-# ==================== AUTHENTICATION AND AUTHORIZATION EXCEPTIONS ====================
+# AUTHENTICATION AND AUTHORIZATION EXCEPTIONS
 
 class AuthenticationError(InsuranceRAGException):
     """Exception raised when authentication fails."""
@@ -529,7 +529,7 @@ class AuthorizationError(InsuranceRAGException):
         return super().to_http_exception(status_code)
 
 
-# ==================== VALIDATION EXCEPTIONS ====================
+# VALIDATION EXCEPTIONS
 
 class ValidationError(InsuranceRAGException):
     """Exception raised when input validation fails."""
@@ -582,7 +582,7 @@ class ConfigurationError(InsuranceRAGException):
         )
 
 
-# ==================== RATE LIMITING EXCEPTIONS ====================
+# RATE LIMITING EXCEPTIONS
 
 class RateLimitError(InsuranceRAGException):
     """Exception raised when rate limits are exceeded."""
@@ -616,7 +616,7 @@ class RateLimitError(InsuranceRAGException):
         return super().to_http_exception(status_code)
 
 
-# ==================== UTILITY FUNCTIONS ====================
+# UTILITY FUNCTIONS
 
 def handle_exception(
     exception: Exception,
