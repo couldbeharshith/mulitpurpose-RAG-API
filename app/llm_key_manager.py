@@ -8,8 +8,8 @@ implements key rotation, tracks key health, and provides automatic recovery mech
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass, field
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 from enum import Enum
 
 logger = logging.getLogger(__name__)

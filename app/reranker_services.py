@@ -7,7 +7,7 @@ as a fallback service, with unified reranker interface for primary/fallback swit
 
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from dataclasses import dataclass
 
 import cohere

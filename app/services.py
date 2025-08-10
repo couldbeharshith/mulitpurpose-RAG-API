@@ -2,7 +2,6 @@
 Unified Services Module for Insurance RAG API
 
 This module consolidates all service classes into a single, well-organized file
-following the patterns from tests/pinetest.py for Pinecone operations.
 """
 
 import os
@@ -1143,13 +1142,12 @@ class DocumentService:
                 f"Processing PPTX with {total_slides} slides using multithreading (slide-based chunking)"
             )
 
-            # Process slides in parallel using ThreadPoolExecutor - exactly like pptx_usage.txt
+            # Process slides in parallel using ThreadPoolExecutor
             from concurrent.futures import as_completed
 
             with ThreadPoolExecutor(
                 max_workers=None
             ) as executor:  # Use default max_workers like the script
-                # Create futures for each slide - exactly like working script
                 futures = {
                     executor.submit(
                         self._process_single_slide_combined,
@@ -1207,7 +1205,7 @@ class DocumentService:
     ) -> str:
         """
         Process a single slide and combine all content into one string.
-        Based on pptx_usage.txt approach - combines title, subtitle, text, tables, OCR.
+        combines title, subtitle, text, tables, OCR.
 
         Args:
             slide_number: 1-based slide number
@@ -1674,11 +1672,9 @@ class DocumentService:
     def _perform_ocr_with_fallback(self, image: Image.Image) -> str:
         """Perform OCR on image - thread-safe implementation."""
         try:
-            # Use the exact same approach as the working script
             # Image is already converted to RGB in the calling function
             logger.info(f"Attempting OCR on image: {image.size}, mode: {image.mode}")
 
-            # Use pytesseract exactly like the working script
             ocr_txt = pytesseract.image_to_string(image).strip().replace("\n", " ")
             return ocr_txt if ocr_txt else ""
 
@@ -2812,7 +2808,6 @@ class LLMService:
     ) -> str:
         """
         Generate answer to a question using context chunks with multi-service fallback.
-        Uses cached prompt template loaded exclusively from app/decision_prompt.txt.
 
         Args:
             question: User question

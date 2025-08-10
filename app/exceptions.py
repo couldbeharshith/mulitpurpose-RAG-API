@@ -13,7 +13,6 @@ from app.models import ErrorResponse
 
 
 # BASE EXCEPTION CLASSES
-
 class InsuranceRAGException(Exception):
     """
     Base exception for the Insurance RAG API application.

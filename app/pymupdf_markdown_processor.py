@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from multiprocessing import Pool, cpu_count
-import tempfile
 
 try:
     from pymupdf4llm import to_markdown

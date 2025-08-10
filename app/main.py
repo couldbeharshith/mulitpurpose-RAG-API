@@ -696,7 +696,7 @@ async def hackrx_run(
                 )
 
                 # Return a user-friendly error message instead of exposing internal errors
-                return f"I apologize, but I encountered an error while processing this question. Please try rephrasing your question or contact support if the issue persists."
+                return f"I apologize, but I encountered an error while processing this question. Please try rephrasing your question."
 
         # Process all questions concurrently using asyncio.gather
         logger.info(
@@ -733,7 +733,7 @@ async def hackrx_run(
             if isinstance(answer, Exception):
                 logger.error(f"Question {i+1} failed with exception: {answer}")
                 final_answers.append(
-                    f"I apologize, but I encountered an error while processing this question. Please try rephrasing your question or contact support if the issue persists."
+                    f"I apologize, but I encountered an error while processing this question. Please try rephrasing your question."
                 )
             else:
                 final_answers.append(answer)

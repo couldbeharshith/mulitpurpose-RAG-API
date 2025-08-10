@@ -2,8 +2,7 @@
 PyMuPDF Document Processor
 
 This module provides fast PDF and multi-format document processing using PyMuPDF (fitz).
-It includes document type detection, text extraction (plain text and markdown), and error handling with graceful
-fallback to legacy processors.
+It includes document type detection, text extraction (plain text and markdown), and error handling
 """
 
 import os

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class Config:
     """Centralized configuration management class"""
     
-    # ==================== CORE API CONFIGURATION ====================
+    # CORE API CONFIGURATION
     API_KEY: str = os.getenv("API_KEY", "")
     APP_NAME: str = os.getenv("APP_NAME", "Insurance RAG API")
     APP_VERSION: str = os.getenv("APP_VERSION", "4.0.0")
@@ -30,7 +30,7 @@ class Config:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "7860"))
     
-    # ==================== LLM CONFIGURATION ====================
+    # LLM CONFIGURATION
     
     # Multi-key configuration
     GEMINI_API_KEY_1: str = os.getenv("GEMINI_API_KEY_1", os.getenv("GEMINI_API_KEY", "NO_API_KEY"))
@@ -75,10 +75,8 @@ class Config:
     GROQ_API_KEY_14: str = os.getenv("GROQ_API_KEY_14", "")
     GROQ_API_KEY_15: str = os.getenv("GROQ_API_KEY_15", "")
     
-    # Service priority configuration
     PRIMARY_LLM_SERVICE: str = os.getenv("PRIMARY_LLM_SERVICE", "gemini").lower()
     
-    # Model configuration
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     
@@ -91,7 +89,6 @@ class Config:
     GROQ_MAX_TOKENS: int = int(os.getenv("GROQ_MAX_TOKENS", "2048"))
     GROQ_TOP_P: float = float(os.getenv("GROQ_TOP_P", "0.8"))
     
-    # ==================== PINECONE CONFIGURATION ====================
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "insurance-rag")
     PINECONE_HOST_URL: str = os.getenv("PINECONE_HOST_URL", "")
@@ -116,7 +113,7 @@ class Config:
     PINECONE_RERANK_TOP_N: int = int(os.getenv("PINECONE_RERANK_TOP_N", "4"))
     PINECONE_RERANK_MODEL: str = os.getenv("PINECONE_RERANK_MODEL", "bge-reranker-v2-m3")
     
-    # ==================== COHERE CONFIGURATION ====================
+    # COHERE CONFIGURATION
     COHERE_API_KEY_1: str = os.getenv("COHERE_API_KEY_1", "")
     COHERE_API_KEY_2: str = os.getenv("COHERE_API_KEY_2", "")
     COHERE_API_KEY_3: str = os.getenv("COHERE_API_KEY_3", "")
@@ -132,18 +129,18 @@ class Config:
     COHERE_API_KEY_13: str = os.getenv("COHERE_API_KEY_13", "")
     COHERE_RERANK_MODEL: str = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
     
-    # ==================== RERANKER SERVICE CONFIGURATION ====================
+    # RERANKER SERVICE CONFIGURATION
     PRIMARY_RERANKER_SERVICE: str = os.getenv("PRIMARY_RERANKER_SERVICE", "pinecone")
     SECONDARY_RERANKER_SERVICE: str = os.getenv("SECONDARY_RERANKER_SERVICE", "cohere")
     
-    # ==================== RELEVANCE CHECK CONFIGURATION ====================
+    # RELEVANCE CHECK CONFIGURATION
     RELEVANCE_CHECK_ENABLED: bool = os.getenv("RELEVANCE_CHECK_ENABLED", "true").lower() == "true"
     RELEVANCE_THRESHOLD: float = float(os.getenv("RELEVANCE_THRESHOLD", "0.255")) 
     
-    # ==================== PLATFORM CONFIGURATION ====================
+    # PLATFORM CONFIGURATION
     PLATFORM: str = os.getenv("PLATFORM", "local")  # vercel, railway, huggingface, or local
     
-    # ==================== PERFORMANCE CONFIGURATION ====================
+    # PERFORMANCE CONFIGURATION
     MAX_CONCURRENT_REQUESTS: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "25"))
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "200"))  # Increased to 200 seconds
     MAX_DOCUMENT_SIZE_MB: int = int(os.getenv("MAX_DOCUMENT_SIZE_MB", "1024"))  # Increased to 1GB
@@ -154,31 +151,17 @@ class Config:
     # Direct Gemini upload threshold (files smaller than this will be uploaded directly to Gemini)
     DIRECT_GEMINI_UPLOAD_THRESHOLD_MB: float = float(os.getenv("DIRECT_GEMINI_UPLOAD_THRESHOLD_MB", "0.5"))
     
-
-    
-    # ==================== TIKTOKEN CONFIGURATION ====================
+    # TIKTOKEN CONFIGURATION
     TIKTOKEN_CHUNK_SIZE: int = int(os.getenv("TIKTOKEN_CHUNK_SIZE", "400"))
     TIKTOKEN_CHUNK_OVERLAP: int = int(os.getenv("TIKTOKEN_CHUNK_OVERLAP", "50"))
     TIKTOKEN_ENCODING: str = os.getenv("TIKTOKEN_ENCODING", "cl100k_base")
     
-    # ==================== PYMUPDF CONFIGURATION ====================
+    # PYMUPDF CONFIGURATION
     USE_MARKDOWN_EXTRACTION: bool = os.getenv("USE_MARKDOWN_EXTRACTION", "true").lower() == "true"
     
-    # ==================== LOGGING CONFIGURATION ====================
+    # LOGGING CONFIGURATION
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_FORMAT: str = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    
-    # ==================== SECURITY CONFIGURATION ====================
-    ALLOWED_CONTENT_TYPES: list = [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # PowerPoint files
-        "text/plain",
-        "message/rfc822",  # Email files
-    ]
-    
-    # Security limits (timeouts removed)
-    MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
     
     # Security headers
     SECURITY_HEADERS: dict = {
@@ -190,7 +173,7 @@ class Config:
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     }
     
-    # ==================== PROMPT MANAGEMENT ====================
+    # PROMPT MANAGEMENT
     _prompts: Optional[Dict[str, Any]] = None
     _prompts_file_path: str = "app/prompts.json"
     
