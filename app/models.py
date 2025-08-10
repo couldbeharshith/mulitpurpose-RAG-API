@@ -1,6 +1,8 @@
 """
 Consolidated data models for the Insurance RAG API.
 All Pydantic models for API requests, responses, and internal data structures.
+
+Note - some of these are deprecated and not used.
 """
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -10,7 +12,6 @@ from urllib.parse import urlparse
 
 
 # CORE DATA MODELS
-
 class ChunkMetadata(BaseModel):
     """Metadata for document chunks with citation information."""
     document_id: str = Field(..., description="Unique identifier for the document")
