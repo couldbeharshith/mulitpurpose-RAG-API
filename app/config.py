@@ -161,7 +161,8 @@ class Config:
     
     # LOGGING CONFIGURATION
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LOG_FORMAT: str = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOG_FORMAT: str = os.getenv("LOG_FORMAT", DEFAULT_LOG_FORMAT)
     
     # Security headers
     SECURITY_HEADERS: dict = {

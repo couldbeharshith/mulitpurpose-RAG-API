@@ -29,11 +29,16 @@ from app.utils import (
     log_performance_metrics,
 )
 
-if not logging.getLogger().handlers:
-    logging.basicConfig(
-        level=getattr(logging, Config.LOG_LEVEL), format=Config.LOG_FORMAT
-    )
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    log_format = Config.LOG_FORMAT
+    try:
+        logging.Formatter(log_format)
+    except ValueError:
+        log_format = Config.DEFAULT_LOG_FORMAT
+    logging.basicConfig(level=getattr(logging, Config.LOG_LEVEL), format=log_format)
+    if log_format != Config.LOG_FORMAT:
+        logger.warning("Invalid LOG_FORMAT. Using the default log format.")
 
 # Get application settings from Config
 app_name = Config.APP_NAME
