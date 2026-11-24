@@ -1,14 +1,4 @@
----
-title: Insurance Agent
-emoji: 🐨
-colorFrom: red
-colorTo: red
-sdk: docker
-pinned: false
-short_description: API
----
-
-# Insurance RAG API
+# RAG API
 
 A high-accuracy RAG-based API for processing queries from documents with URL-based document processing, Pinecone vector storage, Reranking and multiquery expansion implementation
 ---
