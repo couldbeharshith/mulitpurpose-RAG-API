@@ -47,7 +47,7 @@ Open [Folio](http://127.0.0.1:7860/workspace/). In development, run `bun run --c
 ## Using the workspace
 
 - Choose a file, drop one into the workspace, paste a direct HTTP(S) link, or open a bundled sample. Processing starts with the first question.
-- Each conversation has one source. Open another conversation to explore a different file. Switch between them in the sidebar. Use **Questions** to jump to an earlier exchange.
+- Each conversation has one source. Open another conversation to explore a different file. Switch between them in the sidebar. Use the question tabs beneath the active source, or **Questions** on mobile, to jump to an earlier exchange.
 - The UI sends one question per turn. It supplies the eight most recent exchanges, with up to 4,000 characters per previous answer, to resolve follow-ups before searching the source. Earlier turns remain readable in the current tab.
 - The tab holds the conversations, selected files, and access token in memory. Refreshing clears them. Indexed sources use a bounded server-side lookup so follow-ups can reuse the index without resending the file. The browser resubmits the source if that lookup expires. Document chunks stored in Pinecone persist independently.
 

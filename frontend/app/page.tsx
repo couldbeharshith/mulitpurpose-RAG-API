@@ -145,9 +145,17 @@ export default function Workspace() {
     <button className="new-chat" onClick={() => select(null)}><Plus size={18} />New conversation</button>
     <div className="nav-heading">Conversations <span>{chats.length}</span></div>
     <nav aria-label="Conversations">{chats.map(c =>
-      <button key={c.id} className={"chat-link" + (active === c.id ? " current" : "")} onClick={() => select(c.id)} aria-current={active === c.id ? "page" : undefined}>
-        <MessageSquare /><span>{c.source.name}</span>
-      </button>)}</nav>
+      <div key={c.id}>
+        <button className={"chat-link" + (active === c.id ? " current" : "")} onClick={() => select(c.id)} aria-current={active === c.id ? "page" : undefined}>
+          <MessageSquare /><span>{c.source.name}</span>
+        </button>
+        {active === c.id && c.turns.length > 0 && <ol className="edge-tabs" aria-label="Questions in this conversation">
+          {c.turns.map((turn, index) => <li key={index}><button title={turn.question} onClick={() => {
+            setPanel(null);
+            document.getElementById("turn-" + index)?.scrollIntoView({ block: "start" });
+          }}>{turn.question}</button></li>)}
+        </ol>}
+      </div>)}</nav>
     {!chats.length && <p className="nav-empty">Your conversations will appear here once you open a source.</p>}
     <div className="rail-bottom"><button onClick={() => setPanel("formats")}><CircleHelp />Supported sources</button>
     <small>Conversations last for this tab.</small></div>
