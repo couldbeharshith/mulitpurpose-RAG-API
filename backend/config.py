@@ -23,8 +23,7 @@ class Config:
     """Centralized configuration management class"""
     
     # CORE API CONFIGURATION
-    API_KEY: str = os.getenv("API_KEY", "")
-    APP_NAME: str = os.getenv("APP_NAME", "Folio Document API")
+    APP_NAME: str = os.getenv("APP_NAME", "PlexRAG API")
     APP_VERSION: str = os.getenv("APP_VERSION", "4.0.0")
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     HOST: str = os.getenv("HOST", "0.0.0.0")
@@ -78,7 +77,7 @@ class Config:
     PRIMARY_LLM_SERVICE: str = os.getenv("PRIMARY_LLM_SERVICE", "gemini").lower()
     
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
     
     # LLM parameters
     GEMINI_TEMPERATURE: float = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
@@ -160,7 +159,7 @@ class Config:
     USE_MARKDOWN_EXTRACTION: bool = os.getenv("USE_MARKDOWN_EXTRACTION", "true").lower() == "true"
     
     # LOGGING CONFIGURATION
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL") or ("DEBUG" if DEBUG else "WARNING")
     DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     LOG_FORMAT: str = os.getenv("LOG_FORMAT", DEFAULT_LOG_FORMAT)
     

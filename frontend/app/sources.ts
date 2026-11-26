@@ -1,5 +1,14 @@
 export type Source = { name: string; file?: File; url?: string };
 export type Turn = { question: string; answer: string };
+export type Conversation = {
+  id: string;
+  title: string;
+  source: { name: string; url?: string | null; size?: number | null };
+  turns: Turn[];
+  updated_at: string;
+  pinned: boolean;
+  starter?: string | null;
+};
 
 export const examples = [
   { title: "Field recording notes", kind: "Field notes", filename: "Estuary field notes.md",
@@ -22,25 +31,40 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-export async function askSource(source: Source, sourceId: string | undefined, history: Turn[],
-                                question: string, token: string, signal: AbortSignal) {
-  const body = new FormData();
-  if (sourceId) body.set("source_id", sourceId);
-  else if (source.file) body.set("file", source.file);
-  else if (source.url) body.set("url", source.url);
-  body.set("payload", JSON.stringify({
-    questions: [question],
-    history: history.slice(-8).map(t => ({ question: t.question, answer: t.answer.slice(0, 4000) })),
-  }));
-  const response = await fetch(api + "/api/v1/chat", {
-    method: "POST", body, signal,
-    headers: token ? { Authorization: "Bearer " + token } : {},
-  });
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(api + "/api/v1/" + path, { cache: "no-store", ...init });
   const result = await response.json().catch(() => null);
   if (!response.ok) {
     const message = typeof result?.detail === "string" ? result.detail : "The server could not finish this request. Try again.";
     throw new ApiError(response.status, message);
   }
-  if (typeof result?.answers?.[0] !== "string") throw new Error("The server returned an unreadable answer.");
-  return { answer: result.answers[0] as string, sourceId: result.source_id as string | undefined };
+  return result as T;
+}
+
+export const listConversations = (signal?: AbortSignal) => request<Conversation[]>("conversations", { signal });
+
+export function createConversation(source: Source, starter?: string) {
+  const body = new FormData();
+  body.set("name", source.name);
+  if (starter) body.set("starter", starter);
+  if (source.file) body.set("file", source.file);
+  else if (source.url) body.set("url", source.url);
+  return request<Conversation>("conversations", { method: "POST", body });
+}
+
+export function changeConversation(id: string, changes: { title?: string; pinned?: boolean }) {
+  return request<Conversation>("conversations/" + id, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(changes),
+  });
+}
+
+export const deleteConversation = (id: string) => request("conversations/" + id, { method: "DELETE" });
+
+export async function askSource(id: string, question: string, signal: AbortSignal) {
+  const body = new FormData();
+  body.set("conversation_id", id);
+  body.set("payload", JSON.stringify({ questions: [question] }));
+  const result = await request<{ conversation: Conversation }>("chat", { method: "POST", body, signal });
+  if (!result?.conversation) throw new Error("The server returned an unreadable answer.");
+  return result.conversation;
 }

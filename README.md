@@ -1,5 +1,5 @@
 ---
-title: Folio
+title: PlexRAG
 emoji: 📚
 colorFrom: indigo
 colorTo: blue
@@ -8,26 +8,27 @@ pinned: false
 short_description: A conversational workspace for documents and source files
 ---
 
-# Folio
+# PlexRAG
 
-Open a source, ask a question, and follow up. Folio pairs a self-hosted Next.js workspace with a FastAPI retrieval API. It works with material from any field, including reports, research papers, presentations, spreadsheets, correspondence, and images.
+Open a source, ask a question, and follow up. PlexRAG pairs a self-hosted Next.js workspace with a FastAPI retrieval API. It works with material from any field, including reports, research papers, presentations, spreadsheets, correspondence, and images.
 
 ## Run with Docker
 
 Copy `.env.template` to `.env` and configure the providers below. From the repository root, run:
 
 ```sh
-docker build -t folio .
-docker run --rm --env-file .env -p 7860:7860 folio
+docker build -t plexrag .
+docker run --rm --env-file .env -p 7860:7860 -v plexrag-history:/app/chat-data plexrag
 ```
 
 Open [the workspace](http://localhost:7860/workspace/). One container serves the UI, its fonts, and the API.
+
+Use a private instance or put it behind authentication before exposing it publicly. Everyone who can reach the workspace can read and modify its saved conversations. The batch API bearer token protects `/api/v1/hackrx/run` only.
 
 ### Provider settings
 
 - Set at least one `GEMINI_API_KEY_n` and one `GROQ_API_KEY_n`. Gemini handles direct files. The retrieval pipeline uses Groq for query expansion and as a text-generation fallback.
 - Set `PINECONE_API_KEY`, `PINECONE_HOST_URL`, and `PINECONE_INDEX_NAME`. Create an index with integrated text embeddings and map its input to the `text` field. Startup initializes the vector client even when a file qualifies for direct analysis.
-- Leave `API_KEY` empty for a token-free instance. To restrict access, set it to a secret and restart. Enter the same value under **Access** in Folio or send it as an `Authorization: Bearer <token>` header. Provider keys stay on the server.
 - Optional Pinecone or Cohere reranking uses the numbered reranker keys in the template. A single configured slot per provider is sufficient. The template also includes file-size, relevance, model, and chunking settings.
 
 ## Run from source
@@ -39,17 +40,19 @@ uv venv --python 3.11
 uv pip install -r backend/requirements.txt
 bun install --cwd frontend --frozen-lockfile
 bun run --cwd frontend build
-uv run --no-project python -m uvicorn backend.main:app --host 127.0.0.1 --port 7860
+bun run --cwd frontend start
 ```
 
-Open [Folio](http://127.0.0.1:7860/workspace/). In development, run `bun run --cwd frontend dev` in another terminal and open [the live-reloading frontend](http://localhost:3000/workspace/). The dev UI calls the API at `http://127.0.0.1:7860` by default. Set `NEXT_PUBLIC_API_ORIGIN` before starting Next.js to use another API origin in development. The production build uses the same origin as the workspace.
+Open [the workspace](http://127.0.0.1:7860/workspace/). The start command serves the frontend build and API from the same FastAPI process. Rebuild after changing frontend code.
+
+For live reload, run `python start.py` from the repository root. The launcher starts the Next.js development server and API on ports 3000 and 7860 by default. Open the frontend URL it prints. Press Ctrl+C to stop both.
 
 ## Using the workspace
 
 - Choose a file, drop one into the workspace, paste a direct HTTP(S) link, or open a bundled sample. Processing starts with the first question.
 - Each conversation has one source. Open another conversation to explore a different file. Switch between them in the sidebar. Use the question tabs beneath the active source, or **Questions** on mobile, to jump to an earlier exchange.
-- The UI sends one question per turn. It supplies the eight most recent exchanges, with up to 4,000 characters per previous answer, to resolve follow-ups before searching the source. Earlier turns remain readable in the current tab.
-- The tab holds the conversations, selected files, and access token in memory. Refreshing clears them. Indexed sources use a bounded server-side lookup so follow-ups can reuse the index without resending the file. The browser resubmits the source if that lookup expires. Document chunks stored in Pinecone persist independently.
+- The first successful answer gives the conversation a title. Use its sidebar menu to rename, pin, or delete it. The UI sends one question per turn. The API uses the eight most recent exchanges, with up to 4,000 characters per previous answer, to resolve follow-ups before searching the source.
+- The server saves transcripts and uploaded files in the git-ignored `chat-data/` folder. Browsers connected to the same server share this history. Chats and uploads survive a reload or restart. In Docker, keep the history volume mounted across runs. Deleting a conversation removes the local transcript and upload. Content-indexed chunks in Pinecone are shared by identical sources and have a separate lifecycle.
 
 ## Sources and processing
 
@@ -61,7 +64,7 @@ Open [Folio](http://127.0.0.1:7860/workspace/). In development, run `bun run --c
 | Images | Supported images use Gemini vision. |
 | Audio and video | Small supported clips use direct Gemini analysis under `DIRECT_GEMINI_UPLOAD_THRESHOLD_MB` (default 0.5 MB). For longer recordings, use a transcript. Long-form audio/video indexing and timestamp retrieval are future work. |
 
-For indexed documents, Folio splits extracted content with tiktoken, stores records in a content-addressed Pinecone namespace, expands search queries, combines matching chunks, optionally reranks them, and sends the selected context to the answer model. Long PDFs have a versioned namespace so older plain-text indexes do not mask the new extraction. Repeated identical content can reuse an existing index.
+For indexed documents, PlexRAG splits extracted content with tiktoken, stores records in a content-addressed Pinecone namespace, expands search queries, combines matching chunks, optionally reranks them, and sends the selected context to the answer model. Long PDFs have a versioned namespace so older plain-text indexes do not mask the new extraction. Repeated identical content can reuse an existing index.
 
 ## API
 
@@ -79,11 +82,11 @@ For indexed documents, Folio splits extracted content with tiktoken, stores reco
 }
 ```
 
-The response has the form `{"answers": ["First answer", "Second answer"]}`. The workspace and batch API use the same bearer-token setting.
+The response has the form `{"answers": ["First answer", "Second answer"]}`.
 
 ### Conversational requests
 
-`POST /api/v1/chat` accepts multipart form data. Include exactly one of `file`, `url`, or a previously returned `source_id`, plus a JSON string in the `payload` field.
+`POST /api/v1/chat` accepts multipart form data. Include exactly one of `file`, `url`, a previously returned `source_id`, or a saved `conversation_id`, plus a JSON string in the `payload` field.
 
 ```sh
 curl http://localhost:7860/api/v1/chat \
@@ -93,8 +96,12 @@ curl http://localhost:7860/api/v1/chat \
 
 The response contains `answers` and a nullable `source_id`. Each item in `history` contains a `question` and its `answer`. Indexed sources can reuse their handle. Directly analyzed sources are supplied on each turn. A stale handle returns HTTP 410 and can be replaced by sending the original source again.
 
-`GET /api/v1/workspace` reports upload limits and whether a token is required. `GET /health` reports local service configuration. Browsers opening `/` are redirected to the built workspace. API clients requesting JSON receive service information. Set `DEBUG=true` to enable interactive API documentation at `/docs`.
+For saved conversations, `POST /api/v1/conversations` accepts multipart `name` and either `file` or `url`. Pass its returned `id` as `conversation_id` when asking a question. The chat endpoint uses saved history and returns the updated `conversation` with its `answers`. Use `GET /api/v1/conversations` to list chats and `PATCH` or `DELETE /api/v1/conversations/{id}` to manage one.
+
+`GET /api/v1/workspace` reports upload limits. `GET /health` reports local service configuration. Browsers opening `/` are redirected to the built workspace. API clients requesting JSON receive service information.
+
+The backend logs warnings and errors by default. Set `LOG_LEVEL=INFO` for request summaries and access logs, or `LOG_LEVEL=DEBUG` for detailed processing logs. Setting `DEBUG=true` enables interactive API documentation at `/docs` and defaults the log level to `DEBUG` when `LOG_LEVEL` is unset.
 
 ## Project history
 
-The original insurance-focused API was developed on [Hugging Face Spaces](https://huggingface.com/couldbeharshith/insurance-agent). Folio retains its batch endpoint for existing integrations.
+The original insurance-focused API was developed on [Hugging Face Spaces](https://huggingface.com/couldbeharshith/insurance-agent). PlexRAG retains its batch endpoint for existing integrations.

@@ -1,4 +1,4 @@
-"""FastAPI application for the Folio source workspace and batch API."""
+"""FastAPI application for the PlexRAG source workspace and batch API."""
 
 import asyncio
 import base64
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import RedirectResponse
@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from backend.config import Config
+from backend import conversations
 from backend.models import HackRXRequest, HackRXResponse, ErrorResponse, ChatInput, DocumentProcessingResult
 from backend.services import (
     DocumentService,
@@ -34,20 +35,26 @@ from backend.services import (
 )
 from backend.utils import (
     sanitize_input,
-    validate_bearer_token,
     log_performance_metrics,
 )
 
 logger = logging.getLogger(__name__)
+log_level = logging.getLevelName(Config.LOG_LEVEL.strip().upper())
+if not isinstance(log_level, int):
+    log_level = logging.DEBUG if Config.DEBUG else logging.WARNING
 if not logging.getLogger().handlers:
     log_format = Config.LOG_FORMAT
     try:
         logging.Formatter(log_format)
     except ValueError:
         log_format = Config.DEFAULT_LOG_FORMAT
-    logging.basicConfig(level=getattr(logging, Config.LOG_LEVEL), format=log_format)
+    logging.basicConfig(level=log_level, format=log_format)
     if log_format != Config.LOG_FORMAT:
         logger.warning("Invalid LOG_FORMAT. Using the default log format.")
+logging.getLogger("backend").setLevel(log_level)
+logging.getLogger("performance").setLevel(log_level)
+logging.getLogger("httpx").setLevel(max(logging.INFO, log_level))
+logging.getLogger("httpcore").setLevel(max(logging.WARNING, log_level))
 
 # Get application settings from Config
 app_name = Config.APP_NAME
@@ -68,7 +75,7 @@ async def lifespan(app: FastAPI):
     """
     Lifespan context manager for application startup and shutdown
     """
-    # Startup
+    logging.getLogger("uvicorn.access").setLevel(max(logging.INFO, log_level))
     logger.info(f"Starting {app_name} v{app_version} on {Config.PLATFORM}")
 
     # Validate required configuration
@@ -81,7 +88,7 @@ async def lifespan(app: FastAPI):
 
     # Log configuration summary (without sensitive data)
     config_summary = Config.get_config_summary()
-    logger.info(f"Application configuration: {config_summary}")
+    logger.debug("Application configuration: %s", config_summary)
 
     # Initialize services
     # Note: Relevance checking now uses document-based similarity only
@@ -114,6 +121,7 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_url="/openapi.json" if debug_mode else None,
 )
+app.include_router(conversations.router)
 
 workspace_dir = Path(__file__).resolve().parents[1] / "frontend" / "out"
 workspace_csp = None
@@ -132,7 +140,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     max_age=3600,
 )
@@ -149,9 +157,7 @@ async def security_middleware(request: Request, call_next):
     if content_length:
         try:
             content_length = int(content_length)
-            logger.info(
-                f"Processing request with content length: {content_length} bytes"
-            )
+            logger.debug("Request content length: %d bytes", content_length)
         except ValueError:
             pass  # Invalid content-length header, let it pass
 
@@ -186,28 +192,9 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
-# Authentication dependency
-async def verify_bearer_token(authorization: Optional[str] = Header(None)):
-    """Verify Bearer token authentication."""
-    if not validate_bearer_token(authorization):
-        raise HTTPException(
-            status_code=401,
-            detail=ErrorResponse(
-                error_type="AuthenticationError",
-                message="Invalid or missing Bearer token",
-                details={"auth_scheme": "Bearer"},
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                request_id=str(uuid.uuid4()),
-            ).model_dump(),
-        )
-
-
 # HackRX API endpoint
 @app.post("/api/v1/hackrx/run", response_model=HackRXResponse)
-async def hackrx_run(
-    request: HackRXRequest, authorization: Optional[str] = Header(None)
-):
-    await verify_bearer_token(authorization)
+async def hackrx_run(request: HackRXRequest):
     try:
         document = await document_service.process_document_from_url(request.documents, vector_service)
     except Exception as exc:
@@ -236,9 +223,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
             async def process_image_question(question: str, question_index: int) -> str:
                 """Process a single question about an image using Gemini vision API."""
                 try:
-                    logger.info(
-                        f"Processing image question {question_index + 1}: {question[:100]}..."
-                    )
+                    logger.debug("Processing image question %d", question_index + 1)
 
                     content = document_result.direct_gemini_content
 
@@ -321,8 +306,6 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
                 f"({successful_questions}/{len(questions)} questions successful)"
             )
 
-            # Log response data for analysis
-            logger.info(f"RESPONSE DATA - Image Answers: {final_answers}")
 
             return HackRXResponse(answers=final_answers)
 
@@ -343,9 +326,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
             ) -> str:
                 """Process a single question about a document using direct Gemini API."""
                 try:
-                    logger.info(
-                        f"Processing direct Gemini question {question_index + 1}: {question[:100]}..."
-                    )
+                    logger.debug("Processing direct Gemini question %d", question_index + 1)
 
                     # Get filename from chunks metadata
                     filename = "document"
@@ -415,8 +396,6 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
                 f"({successful_questions}/{len(questions)} questions successful)"
             )
 
-            # Log response data for analysis
-            logger.info(f"RESPONSE DATA - Direct Gemini Answers: {final_answers}")
 
             return HackRXResponse(answers=final_answers)
 
@@ -485,7 +464,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
                 )
 
         # Step 1: Batch process all relevance checks in parallel
-        logger.info("Starting relevance checks for all questions...")
+        logger.debug("Checking question relevance")
         relevance_tasks = [
             relevance_service.check_query_relevance(
                 question, i + 1, document_result.namespace, use_semaphore=False
@@ -497,7 +476,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
         )
 
         # Step 2: Batch process query expansion for all relevant questions in parallel
-        logger.info("Starting query expansion for all relevant questions...")
+        logger.debug("Expanding queries for relevant questions")
         expansion_tasks = []
         question_to_expansion_map = {}
 
@@ -561,9 +540,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
             question_start_time = time.time()
 
             try:
-                logger.debug(
-                    f"Processing question {question_index + 1}: {question[:100]}..."
-                )
+                logger.debug("Processing question %d", question_index + 1)
 
                 # Step 1: Use pre-computed relevance check
                 relevance_result = relevance_results[question_index]
@@ -591,7 +568,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
                         await asyncio.sleep(1)  # Reduced wait time
 
                 # Step 2: Use pre-computed diverse queries
-                logger.info(f"📝 Q{question_index + 1}: {question}")
+                logger.debug("Retrieving context for question %d", question_index + 1)
                 diverse_queries = question_to_expansion_map[question_index]
 
                 # Step 3: Multi-query vector search with integrated reranking
@@ -763,8 +740,6 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
             f"document cached: {document_result.cached if document_result else 'N/A'})"
         )
 
-        # Log response data for analysis
-        logger.info(f"RESPONSE DATA - Answers: {final_answers}")
 
         return HackRXResponse(answers=final_answers)
 
@@ -811,16 +786,16 @@ indexed_sources: OrderedDict[str, tuple[str, str]] = OrderedDict()
 @app.get("/api/v1/workspace")
 async def workspace_settings():
     return {
-        "requires_token": bool(Config.API_KEY),
         "max_file_mb": Config.MAX_DOCUMENT_SIZE_MB,
         "direct_media_mb": Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB,
     }
 
 
-@app.post("/api/v1/chat", dependencies=[Depends(verify_bearer_token)])
-async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None),
-               url: Optional[str] = Form(None), source_id: Optional[str] = Form(None)):
-    if sum(bool(value) for value in (file, url, source_id)) != 1:
+@app.post("/api/v1/chat")
+async def chat(request: Request, payload: str = Form(...), file: Optional[UploadFile] = File(None),
+               url: Optional[str] = Form(None), source_id: Optional[str] = Form(None),
+               conversation_id: uuid.UUID | None = Form(None)):
+    if sum(bool(value) for value in (file, url, source_id, conversation_id)) != 1:
         raise HTTPException(422, "Choose one file or one source link.")
     try:
         chat_input = ChatInput.model_validate_json(payload)
@@ -829,16 +804,24 @@ async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None)
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_input=False, include_context=False)[0]["msg"]) from exc
 
-    if source_id:
-        stored = indexed_sources.get(source_id)
+    conversation = None
+    if conversation_id:
+        conversation = await asyncio.to_thread(conversations.get_conversation, conversation_id)
+        url = conversation.source.url
+    cache_key = source_id or (f"chat_{conversation_id}" if conversation_id else None)
+    stored = indexed_sources.get(cache_key)
+    if stored or source_id:
         if not stored:
             raise HTTPException(410, "Reattach the source to continue this conversation.")
-        indexed_sources.move_to_end(source_id)
+        indexed_sources.move_to_end(cache_key)
         doc_hash, namespace = stored
         document = DocumentProcessingResult(document_hash=doc_hash, namespace=namespace,
                                             chunks=[], cached=True, processing_time=0)
     else:
-        if file:
+        if conversation and not url:
+            content = await asyncio.to_thread(conversations.read_source, conversation_id)
+            filename, content_type = conversation.source.name, conversation.source.content_type
+        elif file:
             limit = Config.MAX_DOCUMENT_SIZE_MB * 1024 * 1024
             if file.size is not None and file.size > limit:
                 raise HTTPException(413, f"Choose a file up to {Config.MAX_DOCUMENT_SIZE_MB} MB.")
@@ -875,8 +858,11 @@ async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None)
             raise HTTPException(422, "No readable content was found. For a scanned document, try an OCR or text version.")
 
     questions = chat_input.questions
-    if chat_input.history:
-        history = json.dumps([turn.model_dump() for turn in chat_input.history], ensure_ascii=False)
+    past_turns = conversation.turns[-8:] if conversation else chat_input.history
+    if past_turns:
+        history = json.dumps([
+            {"question": turn.question, "answer": turn.answer[:4000]} for turn in past_turns
+        ], ensure_ascii=False)
         async def resolve(question: str):
             prompt = Config.get_prompt("chat_followup", question=question, history=history)
             return await llm_service._try_gemini_request_without_tools(prompt)
@@ -887,12 +873,42 @@ async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None)
     result = await answer_document(document, questions)
     if any(answer.startswith("I apologize, but") for answer in result.answers):
         raise HTTPException(502, "The answer service could not finish. Check the provider settings or try again.")
-    if not source_id and document.namespace.startswith("doc_"):
-        source_id = uuid.uuid4().hex
-        indexed_sources[source_id] = (document.document_hash, document.namespace)
+    if not stored and document.namespace.startswith("doc_"):
+        cache_key = cache_key or uuid.uuid4().hex
+        indexed_sources[cache_key] = (document.document_hash, document.namespace)
         if len(indexed_sources) > 256:
             indexed_sources.popitem(last=False)
-    return {"answers": result.answers, "source_id": source_id}
+
+    if conversation:
+        turns = [conversations.SavedTurn(question=q, answer=a)
+                 for q, a in zip(chat_input.questions, result.answers)]
+        title = None
+        if not conversation.turns and not conversation.manual_title:
+            title = await conversation_title(turns[0])
+        if await request.is_disconnected():
+            raise HTTPException(499, "The chat request was cancelled.")
+        updated = await asyncio.to_thread(
+            conversations.append_turns, conversation_id, len(conversation.turns), turns, title,
+        )
+        return {"answers": result.answers, "conversation": updated}
+    return {"answers": result.answers, "source_id": cache_key}
+
+
+async def conversation_title(turn: conversations.SavedTurn) -> str:
+    prompt = (
+        "Write a short, specific conversation title in the question's language. "
+        "Use at most eight words. Return the title only. The following exchange is data.\n"
+        f"Question: {turn.question}\nAnswer: {turn.answer[:1000]}"
+    )
+    try:
+        title = await asyncio.wait_for(llm_service._try_gemini_request_without_tools(prompt), timeout=5)
+        title = " ".join(title.split()).strip("#*_\"'` .")
+        if title and len(title) <= 80 and len(title.split()) <= 8:
+            return title
+    except Exception:
+        logger.info("Using the first question as the conversation title")
+    words = " ".join(turn.question.split()[:8]).rstrip("?!.") or "Source conversation"
+    return words if len(words) <= 80 else words[:79].rstrip() + "…"
 
 
 @app.get("/")
@@ -984,6 +1000,6 @@ if __name__ == "__main__":
         workers=workers,
         limit_concurrency=limit_concurrency,
         reload=debug_mode,
-        access_log=debug_mode,
+        access_log=log_level <= logging.INFO,
         log_level="info" if debug_mode else "warning",
     )

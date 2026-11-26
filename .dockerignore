@@ -2,6 +2,7 @@
 .env
 .venv
 agent_temp
+chat-data
 temp
 **/__pycache__
 frontend/.next

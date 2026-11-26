@@ -1,13 +1,18 @@
 .venv
 .env
+.env.local
+.env.*.local
 
 __pycache__/
 __pypackages__/
+*.py[cod]
 
 test.md
-agent_temp/
-temp/
-frontend/node_modules/
-frontend/.next/
-frontend/out/
+/agent_temp/
+/chat-data/
+/temp/
+
+node_modules/
+/frontend/.next/
+/frontend/out/
 *.tsbuildinfo

@@ -112,7 +112,7 @@ class TikTokenChunker:
             # Create overlapping chunks
             chunks = self._create_chunks_with_overlap(tokens, text, metadata)
             
-            logger.info(f"Created {len(chunks)} chunks from {total_tokens} tokens")
+            logger.debug("Created %d chunks from %d tokens", len(chunks), total_tokens)
             return chunks
             
         except Exception as e:

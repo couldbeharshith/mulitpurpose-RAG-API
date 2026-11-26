@@ -60,6 +60,31 @@ from backend.tiktoken_chunker import TikTokenChunker, TikTokenError, create_fall
 logger = logging.getLogger(__name__)
 
 
+class IncompleteAnswer(ValueError):
+    pass
+
+
+def complete_answer(text: str | None, finish_reason: str) -> str:
+    answer = (text or "").strip()
+    if finish_reason != "STOP" or not answer:
+        raise IncompleteAnswer(f"Answer generation ended with {finish_reason or 'no finish reason'}")
+
+    lines = answer.splitlines()
+    if len(lines) > 1 and re.fullmatch(r"[ |:\-]+", lines[-1]):
+        lines.pop()
+    if lines[-1].startswith("|") and lines[-1].count("|") >= 2:
+        previous = lines[-2] if len(lines) > 1 else ""
+        if not previous.startswith("|"):
+            raise IncompleteAnswer("Answer ended at a Markdown table heading")
+    return answer
+
+
+def gemini_answer(response) -> str:
+    candidate = next(iter(response.candidates or []), None)
+    reason = candidate.finish_reason if candidate else None
+    return complete_answer(response.text, reason.value if reason else "")
+
+
 def chunks(iterable, batch_size=90):
     """A helper function to break an iterable into chunks of size batch_size."""
     it = iter(iterable)
@@ -1349,7 +1374,7 @@ class DocumentService:
                 # Move start position with overlap
                 start = max(start + chunk_size - overlap, end)
 
-            logger.info(f"Slide {slide_number}: Split into {len(chunks)} chunks")
+            logger.debug(f"Slide {slide_number}: Split into {len(chunks)} chunks")
 
         return chunks
 
@@ -1445,10 +1470,10 @@ class DocumentService:
                 chunk_number += 1
 
             # Extract image OCR text with enhanced logging
-            logger.info(f"Attempting OCR extraction for slide {slide_number}")
+            logger.debug(f"Attempting OCR extraction for slide {slide_number}")
             image_ocr_content = self._extract_slide_image_ocr(slide)
             if image_ocr_content:
-                logger.info(
+                logger.debug(
                     f"OCR content extracted for slide {slide_number}: {len(image_ocr_content)} characters"
                 )
                 metadata = ChunkMetadata(
@@ -1763,7 +1788,7 @@ class DocumentService:
             try:
                 # Log progress for large files
                 if i > 0 and i % 100 == 0:
-                    logger.info(
+                    logger.debug(
                         f"Processed {i}/{len(chunks)} chunks ({(i/len(chunks)*100):.1f}%)"
                     )
 
@@ -2284,18 +2309,15 @@ class VectorService:
                         )
 
                         successful_batches += 1
-                        logger.info(
+                        logger.debug(
                             f"Successfully upserted batch {i+1} with {len(batch_list)} records"
                         )
 
                         # Small delay between batches to avoid rate limiting
                         if total_batches > 5:
-                            logger.info(
-                                f"WAITING! - Large Document - batch {i+1}"
-                            )
                             await asyncio.sleep(2.5)
                         else:
-                            logger.info(f"WAITING! - Small Document - batch {i+1}")
+
                             await asyncio.sleep(0.3)  # small delay for smaller batches
 
                     except Exception as batch_error:
@@ -2363,7 +2385,7 @@ class VectorService:
                 # Log progress every 10 checks
                 if check_count % 40 == 0:
                     elapsed = time.time() - start_time
-                    logger.info(
+                    logger.debug(
                         f"Still waiting for indexing completion for namespace {namespace} - check #{check_count} ({elapsed:.1f}s elapsed)"
                     )
 
@@ -2626,7 +2648,7 @@ class VectorService:
 
         try:
             logger.info(
-                f"Reranking {len(chunks)} chunks with original query: {original_query[:50]}..."
+                "Reranking %d chunks", len(chunks)
             )
 
             # Use singleton reranker service to avoid duplicate initializations
@@ -2850,13 +2872,13 @@ class LLMService:
                 "decision_prompt", context=context, question=question
             )
 
-            logger.info(f"Generating answer for question: {question[:50]}...")
+            logger.debug("Generating answer")
             logger.debug("Using decision_prompt from centralized prompts.json")
 
             # Try primary service first, then fallback
             answer = await self._make_request_with_fallback(prompt)
 
-            logger.info(f"Generated answer: {answer[:100]}...")
+            logger.debug("Answer generated (%d characters)", len(answer))
             return answer
 
         except Exception as e:
@@ -2916,46 +2938,45 @@ class LLMService:
                 # Get next key in rotation
                 api_key = await self.gemini_key_manager.get_next_key()
 
-                # Configure Gemini with current key
-                genai.configure(api_key=api_key)
-
-                # Create model instance WITHOUT flight tool for regular text generation
-                # Flight tool should only be available when processing flight-related documents
-                model = genai.GenerativeModel(
-                    model_name=Config.GEMINI_MODEL,
-                    generation_config={
-                        "temperature": Config.GEMINI_TEMPERATURE,
-                        "top_p": Config.GEMINI_TOP_P,
-                        "max_output_tokens": Config.GEMINI_MAX_TOKENS,
-                    },
-                    safety_settings={
-                        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                    },
-                    # NO TOOLS - flight tool only available for flight-related documents
+                config = types.GenerateContentConfig(
+                    temperature=Config.GEMINI_TEMPERATURE,
+                    top_p=Config.GEMINI_TOP_P,
+                    max_output_tokens=Config.GEMINI_MAX_TOKENS,
+                    thinking_config=(
+                        types.ThinkingConfig(thinking_budget=0)
+                        if Config.GEMINI_MODEL.startswith("gemini-2.5-flash")
+                        else None
+                    ),
+                    safety_settings=[
+                        types.SafetySetting(category=category.name, threshold="BLOCK_MEDIUM_AND_ABOVE")
+                        for category in (
+                            HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        )
+                    ],
                 )
 
-                # Make request
-                response = await asyncio.to_thread(model.generate_content, prompt)
-
-                if not response:
-                    raise Exception("Empty response from Gemini API")
-
-                logger.debug(f"Gemini response type: {type(response)}")
-                logger.debug(
-                    f"Gemini response candidates: {len(response.candidates) if response.candidates else 0}"
+                client = google_genai.Client(api_key=api_key)
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=Config.GEMINI_MODEL, contents=prompt, config=config,
                 )
+                try:
+                    return gemini_answer(response)
+                except IncompleteAnswer:
+                    logger.warning("Gemini returned an incomplete answer. Retrying with concise bullets.")
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=Config.GEMINI_MODEL,
+                        contents=prompt + "\nProvide a concise, complete answer in bullets. Avoid tables.",
+                        config=config,
+                    )
+                    return gemini_answer(response)
 
-                # Return regular text response (no function calls in regular text generation)
-                if response.text:
-                    # Add sleep after successful LLM call
-                    await asyncio.sleep(0.5)
-                    return response.text.strip()
-                else:
-                    raise Exception("No text response from Gemini API")
-
+            except IncompleteAnswer:
+                raise
             except Exception as e:
                 # Add sleep after failed LLM call
                 await asyncio.sleep(0.5)
@@ -3148,13 +3169,14 @@ class LLMService:
             stop=None,
         )
 
-        if not completion.choices or not completion.choices[0].message.content:
+        if not completion.choices:
             raise Exception("Empty response from Groq API")
 
         # Add sleep after LLM call
         await asyncio.sleep(0.5)
 
-        return completion.choices[0].message.content.strip()
+        choice = completion.choices[0]
+        return complete_answer(choice.message.content, choice.finish_reason.upper())
 
     async def _try_groq_request_with_cycling(self, prompt: str) -> str:
         """
@@ -3194,7 +3216,7 @@ class LLMService:
         """
         async with self._semaphore:
             try:
-                logger.info(f"Generating image answer for question: {question[:50]}...")
+                logger.debug("Generating image answer")
 
                 # Read image file
                 with open(image_path, "rb") as image_file:
@@ -3279,7 +3301,7 @@ class LLMService:
                 # Add sleep after successful LLM call
                 await asyncio.sleep(0.5)
 
-                return response.text.strip()
+                return gemini_answer(response)
 
             except Exception as e:
                 # Add sleep after failed LLM call
@@ -3312,9 +3334,7 @@ class LLMService:
         """
         async with self._semaphore:
             try:
-                logger.info(
-                    f"Generating direct Gemini answer for question: {question[:50]}... on file: {filename}"
-                )
+                logger.debug("Generating direct document answer")
 
                 # Determine MIME type for Gemini
                 mime_type = self._get_gemini_mime_type(content_type, filename)
@@ -3515,7 +3535,7 @@ class LLMService:
                 logger.info(
                     f"Successfully processed document {filename} with Gemini direct upload"
                 )
-                return response.text.strip()
+                return gemini_answer(response)
 
             except Exception as e:
 
@@ -3702,7 +3722,7 @@ class QueryExpansionService:
                     queries = await self._generate_with_groq(original_query)
                     if queries and len(queries) >= 3:
                         self._log_generated_queries(
-                            original_query, queries[:3], "Groq"
+                            queries[:3], "Groq"
                         )
                         return queries[:3]
                 except Exception as e:
@@ -3714,47 +3734,26 @@ class QueryExpansionService:
                     queries = await self._generate_with_gemini(original_query)
                     if queries and len(queries) >= 3:
                         self._log_generated_queries(
-                            original_query, queries[:3], "Gemini"
+                            queries[:3], "Gemini"
                         )
                         return queries[:3]
                 except Exception as e:
                     logger.debug(f"Gemini query generation failed: {e}")
 
             # Final fallback - return original query
-            self._log_fallback_query(original_query)
+            self._log_fallback_query()
             return [original_query]
 
         except Exception as e:
             logger.error(f"❌ Query expansion failed: {e}")
-            self._log_fallback_query(original_query)
+            self._log_fallback_query()
             return [original_query]
 
-    def _log_generated_queries(
-        self, original_query: str, generated_queries: List[str], method: str
-    ):
-        """
-        Log the generated queries in a structured format for easy monitoring.
+    def _log_generated_queries(self, generated_queries: List[str], method: str):
+        logger.debug("Expanded query into %d variants using %s", len(generated_queries), method)
 
-        Args:
-            original_query: The original user question
-            generated_queries: List of generated diverse queries
-            method: The method used (Groq/Gemini)
-        """
-        logger.info(
-            f"🎯 Multi-query generated ({method}) for {original_query}: {len(generated_queries)} queries: {generated_queries}"
-        )
-
-    def _log_fallback_query(self, original_query: str):
-        """
-        Log when falling back to original query only.
-
-        Args:
-            original_query: The original user question
-        """
-        logger.info(f"🔄 Multi-query fallback: using original query only")
-        logger.info(
-            f'QUERY_EXPANSION: original="{original_query}" method="fallback" count=1'
-        )
+    def _log_fallback_query(self):
+        logger.debug("Query expansion fell back to the original query")
 
     async def _generate_with_groq(self, query: str) -> List[str]:
         """
@@ -3838,17 +3837,17 @@ class QueryExpansionService:
             queries = self._parse_query_response(response_text)
 
             if queries and len(queries) >= 3:
-                self._log_generated_queries(query, queries[:3], "Groq")
+                self._log_generated_queries(queries[:3], "Groq")
                 return queries[:3]
             else:
                 # Fallback to original query
-                self._log_fallback_query(query)
+                self._log_fallback_query()
                 return [query]
 
         except Exception as e:
             logger.error(f"Groq direct query generation failed: {e}")
             # Fallback to original query
-            self._log_fallback_query(query)
+            self._log_fallback_query()
             return [query]
 
     async def _generate_with_gemini(self, query: str) -> List[str]:

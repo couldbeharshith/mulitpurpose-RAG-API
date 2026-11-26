@@ -1,9 +1,10 @@
 {
-  "name": "folio-workspace",
+  "name": "plexrag-workspace",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "start": "uv --directory .. run --no-project python -m uvicorn backend.main:app --host 127.0.0.1 --port 7860",
     "build": "next build"
   },
   "dependencies": {

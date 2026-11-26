@@ -1,7 +1,8 @@
+import icon from "./icon.png";
 import { AlignLeft, AudioLines, Table2 } from "lucide-react";
 
 export function Mark() {
-  return <span className="mark" aria-hidden="true"><i /><i /><i /></span>;
+  return <span className="mark" aria-hidden="true"><img src={icon.src} alt="" draggable={false} /></span>;
 }
 
 export function SourceArt() {

@@ -126,34 +126,6 @@ class InputSanitizer:
         return sanitized_questions
 
 
-def validate_bearer_token(authorization_header: Optional[str]) -> bool:
-    """
-    Validate Bearer token against configured API key.
-    
-    Args:
-        authorization_header: Authorization header value
-        
-    Returns:
-        True if token is valid, False otherwise
-    """
-    from backend.config import Config
-    
-    if not Config.API_KEY:
-        return True
-    if not authorization_header or not isinstance(authorization_header, str):
-        return False
-    
-    # Check Bearer token format
-    if not authorization_header.startswith('Bearer '):
-        return False
-    
-    # Extract token
-    token = authorization_header[7:].strip()  # Remove 'Bearer ' prefix
-    
-    # Validate against configured API key
-    return token == Config.API_KEY and bool(Config.API_KEY)
-
-
 # PERFORMANCE LOGGING UTILITIES
 
 class PerformanceLogger:
@@ -206,7 +178,7 @@ class PerformanceLogger:
         elif status_code >= 400:
             self.logger.warning(f"API request client error: {json.dumps(log_data)}")
         elif processing_time > 10.0:
-            self.logger.warning(f"Slow API request: {json.dumps(log_data)}")
+            self.logger.info(f"Slow API request: {json.dumps(log_data)}")
         else:
             self.logger.info(f"API request: {json.dumps(log_data)}")
 
