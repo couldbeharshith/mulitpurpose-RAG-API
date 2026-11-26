@@ -1,4 +1,13 @@
 # Optimized Dockerfile for Hugging Face Spaces
+FROM node:22-bookworm-slim AS workspace
+COPY --from=oven/bun:1.4.5 /usr/local/bin/bun /usr/local/bin/bun
+WORKDIR /workspace
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY frontend/package.json frontend/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY frontend/ ./
+RUN bun run build
+
 FROM python:3.11-slim
 
 # Set working directory
@@ -16,14 +25,16 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY backend/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY backend/ ./backend/
+COPY app.py .
+COPY --from=workspace /workspace/out ./frontend/out
 
 # Optional: Test Tesseract installation (uncomment to run during build)
 # RUN python test_tesseract_docker.py
@@ -61,4 +72,4 @@ HEALTHCHECK --interval=60s --timeout=30s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 
 # Run the application optimized for Hugging Face Spaces
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1", "--limit-concurrency", "8"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1", "--limit-concurrency", "8"]

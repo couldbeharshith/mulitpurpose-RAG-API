@@ -1,139 +1,100 @@
 ---
-title: Insurance Agent
-emoji: 🐨
-colorFrom: red
-colorTo: red
+title: Folio
+emoji: 📚
+colorFrom: indigo
+colorTo: blue
 sdk: docker
 pinned: false
-short_description: API
+short_description: A conversational workspace for documents and source files
 ---
 
-# Insurance RAG API
+# Folio
 
-A high-accuracy RAG-based API for processing queries from documents with URL-based document processing, Pinecone vector storage, Reranking and multiquery expansion implementation
----
+Open a source, ask a question, and follow up. Folio pairs a self-hosted Next.js workspace with a FastAPI retrieval API. It works with material from any field, including reports, research papers, presentations, spreadsheets, correspondence, and images.
 
-## Features
+## Run with Docker
 
-- **Document Processing**: Supports PDF, DOCX, TXT, and EML files from URLs
-- **PyMuPDF Integration**: Fast PDF processing with multiprocessing
-- **Markdown Extraction**: Advanced PDF to markdown conversion with multiprocessing for better structure preservation
-- **TikToken Chunking**: Token-aware text chunking for better accuracy
-- **Vector Search**: Pinecone-powered semantic search
-- **LLM Integration**: Google Gemini for intelligent responses
-- **Relevance Filtering**: Pre-filters irrelevant queries to save costs (optional)
-- **Concurrent Processing**: Handles multiple questions in parallel using asyncio
+Copy `.env.template` to `.env` and configure the providers below. From the repository root, run:
 
----
+```sh
+docker build -t folio .
+docker run --rm --env-file .env -p 7860:7860 folio
+```
 
-## API Endpoints
+Open [the workspace](http://localhost:7860/workspace/). One container serves the UI, its fonts, and the API.
 
-### POST `/api/v1/hackrx/run`
+### Provider settings
 
-Process insurance policy documents and answer questions.
+- Set at least one `GEMINI_API_KEY_n` and one `GROQ_API_KEY_n`. Gemini handles direct files. The retrieval pipeline uses Groq for query expansion and as a text-generation fallback.
+- Set `PINECONE_API_KEY`, `PINECONE_HOST_URL`, and `PINECONE_INDEX_NAME`. Create an index with integrated text embeddings and map its input to the `text` field. Startup initializes the vector client even when a file qualifies for direct analysis.
+- Leave `API_KEY` empty for a token-free instance. To restrict access, set it to a secret and restart. Enter the same value under **Access** in Folio or send it as an `Authorization: Bearer <token>` header. Provider keys stay on the server.
+- Optional Pinecone or Cohere reranking uses the numbered reranker keys in the template. A single configured slot per provider is sufficient. The template also includes file-size, relevance, model, and chunking settings.
 
-**Request Body:**
+## Run from source
+
+The Python package lives in `backend/` and the Next.js project in `frontend/`. Use Python 3.11, uv, Node.js 22, and Bun. The following commands run from the repository root after configuring `.env`:
+
+```sh
+uv venv --python 3.11
+uv pip install -r backend/requirements.txt
+bun install --cwd frontend --frozen-lockfile
+bun run --cwd frontend build
+uv run --no-project python -m uvicorn backend.main:app --host 127.0.0.1 --port 7860
+```
+
+Open [Folio](http://127.0.0.1:7860/workspace/). In development, run `bun run --cwd frontend dev` in another terminal and open [the live-reloading frontend](http://localhost:3000/workspace/). The dev UI calls the API at `http://127.0.0.1:7860` by default. Set `NEXT_PUBLIC_API_ORIGIN` before starting Next.js to use another API origin in development. The production build uses the same origin as the workspace.
+
+## Using the workspace
+
+- Choose a file, drop one into the workspace, paste a direct HTTP(S) link, or open a bundled sample. Processing starts with the first question.
+- Each conversation has one source. Open another conversation to explore a different file. Switch between them in the sidebar. Use the question tabs beneath the active source, or **Questions** on mobile, to jump to an earlier exchange.
+- The UI sends one question per turn. It supplies the eight most recent exchanges, with up to 4,000 characters per previous answer, to resolve follow-ups before searching the source. Earlier turns remain readable in the current tab.
+- The tab holds the conversations, selected files, and access token in memory. Refreshing clears them. Indexed sources use a bounded server-side lookup so follow-ups can reuse the index without resending the file. The browser resubmits the source if that lookup expires. Document chunks stored in Pinecone persist independently.
+
+## Sources and processing
+
+| Source | Processing |
+| --- | --- |
+| PDFs | With Markdown extraction enabled (default), PDFs over 10 pages go through PyMuPDF4LLM even below the direct-upload size threshold. Extraction retains page metadata and falls back to text if conversion fails. Short PDFs remain eligible for direct analysis. Image-only scans may require OCR before upload. |
+| Word, presentations, spreadsheets | DOCX uses python-docx. PPTX preserves slide structure and can OCR embedded images with Tesseract, included in Docker. XLSX uses openpyxl to extract worksheet tables. |
+| Text, email, and code | Supports plain text, Markdown, CSV, JSON, HTML, EML, and other text files. File type and size determine whether content is analyzed directly or chunked. |
+| Images | Supported images use Gemini vision. |
+| Audio and video | Small supported clips use direct Gemini analysis under `DIRECT_GEMINI_UPLOAD_THRESHOLD_MB` (default 0.5 MB). For longer recordings, use a transcript. Long-form audio/video indexing and timestamp retrieval are future work. |
+
+For indexed documents, Folio splits extracted content with tiktoken, stores records in a content-addressed Pinecone namespace, expands search queries, combines matching chunks, optionally reranks them, and sends the selected context to the answer model. Long PDFs have a versioned namespace so older plain-text indexes do not mask the new extraction. Repeated identical content can reuse an existing index.
+
+## API
+
+### Batch questions from a URL
+
+`POST /api/v1/hackrx/run` accepts one HTTP(S) source URL and **1–50 questions** of 3–1,000 characters. Answers follow input order.
+
 ```json
 {
-  "documents": "https://example.com/policy.pdf",
+  "documents": "https://example.org/materials-report.pdf",
   "questions": [
-    "What is covered under this policy?",
-    "What are the exclusions?"
+    "Which materials were compared?",
+    "How was humidity controlled during the trial?"
   ]
 }
 ```
 
-**Response:**
-```json
-{
-  "answers": [
-    "This policy covers medical expenses up to ₹5 lakhs (Page 3, Line 15)...",
-    "Exclusions include pre-existing conditions (Page 8, Line 22)..."
-  ]
-}
+The response has the form `{"answers": ["First answer", "Second answer"]}`. The workspace and batch API use the same bearer-token setting.
+
+### Conversational requests
+
+`POST /api/v1/chat` accepts multipart form data. Include exactly one of `file`, `url`, or a previously returned `source_id`, plus a JSON string in the `payload` field.
+
+```sh
+curl http://localhost:7860/api/v1/chat \
+  -F 'file=@report.pdf' \
+  -F 'payload={"questions":["What are the main findings?"],"history":[]}'
 ```
 
-### GET `/health`
+The response contains `answers` and a nullable `source_id`. Each item in `history` contains a `question` and its `answer`. Indexed sources can reuse their handle. Directly analyzed sources are supplied on each turn. A stale handle returns HTTP 410 and can be replaced by sending the original source again.
 
-Health check endpoint for monitoring.
+`GET /api/v1/workspace` reports upload limits and whether a token is required. `GET /health` reports local service configuration. Browsers opening `/` are redirected to the built workspace. API clients requesting JSON receive service information. Set `DEBUG=true` to enable interactive API documentation at `/docs`.
 
----
+## Project history
 
-## Supported Document Types
-
-- PDF files (.pdf)
-- Email files (.eml)
-- Microsoft Word documents (.docx)
-- Microsoft Excel documents (.xlsx)
-- Microsoft Powerpoint documents (.pptx)
-- Plain text files (.txt including code files like .html, .js, .py, .xlm, etc.)
-- Image files (.png, .jpg, .bmp, .gif, .webp, .heic, .heif)
-- Audio files (.wav, .mp3, .aiff, .aac, .ogg, .flac) `under 0.5 MB`
-- Video files (.mp4, .mpeg, .mov, .avi, .x-flv, .webm, .wmv, .3gpp) `under 0.5 MB`
-
----
-
-# Steps of processing (processing pipeline)
-
-1. **Receive request**  
-   FastAPI accepts incoming POST requests at the `/api/v1/hackrx/run` endpoint.
-
-2. **Fetch document**  
-   Download the document from the provided URL if it’s under the size limit (default `1GB`, configurable via `.env`) and not a `.zip` or `.bin`.
-
-3. **Classify document**  
-   Classify the file by type and size to determine the processing path.
-
-4. **Direct multimodal handling (fast path)**  
-   If the file is an image, or is ≤ `0.5MB` (configurable) and is a `pdf`, `txt`/`eml`, or `audio`/`video`, send it directly to Gemini’s multimodal API to answer the query without chunking, embedding, or retrieval — this significantly reduces latency.
-
-5. **Process PDF**  
-   Extract text and tables from PDFs using `pymupdf4LLM` and convert output to `Markdown` If pdf is ≤ 300 pages else we process it into plain text to save up on processing time. Processing is parallelized by batching pages across worker processes if file is large enough.
-
-6. **Process DOCX**  
-   Extract content from `.docx` files using `pymupdf` and convert to Markdown.
-
-7. **Process PPTX**  
-   Extract slides and text from `.pptx` via `python-pptx` and apply Tesseract OCR where needed; output is converted to Markdown to preserve structure of text and tables.
-
-8. **Process XLSX**  
-   Parse Excel workbooks with `openpyxl`, exporting each worksheet’s contents to Markdown table format.
-
-9. **Chunking**  
-   Split extracted text into chunks using `tiktoken`(`cl100kbase`) with chunk size and overlap defined in `.env`.
-
-10. **Embed & store**  
-    Upsert records with plain text of each chunk (`llama-text-embed-v2`) to pinecone in batches to reduce latency and store vectors along plain-text chunks in Pinecone.
-
-11. **Relevance filtering (optional)**  
-    If enabled in `.env`, compute similarity between the query embedding and chunk embeddings. Mark queries as irrelevant when the top similarity is below the configured threshold (`note`: disable for multilingual tasks). Irrelevant queries are not processed further and return a suitable API response.
-
-12. **Query expansion (multi-query)**  
-    Expand each incoming query into three rephrased queries using an LLM (primary: Groq, fallback: Gemini) to improve retrieval recall.
-
-13. **Retrieve & deduplicate**  
-    Vector-query Pinecone for the `top_k` (configurable) results for each rephrased query, merge results, and deduplicate candidate chunks.
-
-14. **Rerank**  
-    Rerank the deduplicated chunks against the original query (primary: BGE (`bge-reranker-v2-m3`), fallback: cohere (`rerank-v3.5`)) and select the `top_n` chunks (configurable).
-
-15. **Final LLM call**  
-    Send the `top_n` chunks as context to the final LLM (primary: Gemini, fallback: Groq) using prompt templates in `prompts.json`. We also provide a tool/function for the LLM to make external API calls when needed for specific queries.
-
-16. **Return & store response**  
-    Collect the final LLM output, store it, and return the consolidated answer to the API caller.
-
----
-## Notes & operational details
-
-- **Configuration:** Most global settings (size limits, thresholds, `top_k`, `top_n`, model preferences, etc.) are configurable in `.env`.  
-- **API key rotation:** We rotate API keys across multiple Gemini, Groq, and Pinecone keys (primary pool, then secondary) to distribute load and avoid free-tier rate limits.  
-- **Data classes:** All data classes we use are stores in `models.py`.
-- **Prompt management:** All prompts used live in a central json file `prompts.json`.
-- **Repo history:** The repo was originally hosted on Hugging Face: `https://huggingface.com/couldbeharshith/insurance-agent`. We migrated to GitHub for convenience; prior commits and the working HF endpoint are still available there.  
-- **Live endpoint (Hugging Face Spaces):**  
-  `https://couldbeharshith-insurance-agent.hf.space/api/v1/hackrx/run`
-- **API Keys:** all of our free API keys are in the .env. *If you want to use a single API key, just copy paste the SAME API key for all API key variables in `.env`*
-
-
----
+The original insurance-focused API was developed on [Hugging Face Spaces](https://huggingface.com/couldbeharshith/insurance-agent). Folio retains its batch endpoint for existing integrations.

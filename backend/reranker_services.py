@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import cohere
 from pinecone import Pinecone
 
-from app.config import Config
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 

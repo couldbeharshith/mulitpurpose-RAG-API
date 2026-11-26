@@ -10,6 +10,7 @@ import logging
 import asyncio
 import hashlib
 import itertools
+import mimetypes
 import aiohttp
 import tempfile
 import time
@@ -44,16 +45,16 @@ from groq import Groq
 from pinecone import Pinecone
 
 # Internal imports
-from app.config import Config
-from app.models import (
+from backend.config import Config
+from backend.models import (
     DocumentChunk,
     ChunkMetadata,
     RelevantChunk,
     DocumentProcessingResult,
     VectorSearchResult
 )
-from app.pymupdf_processor import PyMuPDFProcessor, PyMuPDFError
-from app.tiktoken_chunker import TikTokenChunker, TikTokenError, create_fallback_chunker
+from backend.pymupdf_processor import PyMuPDFProcessor, PyMuPDFError
+from backend.tiktoken_chunker import TikTokenChunker, TikTokenError, create_fallback_chunker
 
 
 logger = logging.getLogger(__name__)
@@ -207,21 +208,15 @@ class DocumentService:
                             # Return special indicator for oversized files instead of raising exception
                             return b"__FILE_TOO_LARGE__", "application/oversized"
 
-                    content = await response.read()
-
-                    # Double-check actual downloaded size
-                    actual_size_bytes = len(content)
-                    actual_size_mb = actual_size_bytes / (1024 * 1024)
-
-                    if actual_size_bytes > max_size_bytes:
-                        logger.warning(
-                            f"Downloaded document size ({actual_size_mb:.2f} MB) exceeds maximum allowed size ({Config.MAX_DOCUMENT_SIZE_MB} MB)"
-                        )
-                        # Return special indicator for oversized files instead of raising exception
-                        return b"__FILE_TOO_LARGE__", "application/oversized"
-
+                    buffer = bytearray()
+                    async for block in response.content.iter_chunked(1024 * 1024):
+                        if len(buffer) + len(block) > max_size_bytes:
+                            return b"__FILE_TOO_LARGE__", "application/oversized"
+                        buffer.extend(block)
+                    content = bytes(buffer)
+                    actual_size_mb = len(content) / (1024 * 1024)
                     logger.info(
-                        f"Successfully fetched document: {actual_size_mb:.2f} MB ({actual_size_bytes}) bytes, type: {content_type}"
+                        f"Successfully fetched document: {actual_size_mb:.2f} MB ({len(content)} bytes), type: {content_type}"
                     )
                     return content, content_type
 
@@ -340,6 +335,7 @@ class DocumentService:
             # Audio
             "audio/wav",
             "audio/mp3",
+            "audio/mpeg",
             "audio/aiff",
             "audio/aac",
             "audio/ogg",
@@ -441,12 +437,14 @@ class DocumentService:
         Returns:
             DocumentProcessingResult with chunks and metadata
         """
+        content, content_type = await self.fetch_document(url)
+        filename = Path(urlparse(url).path).name or "document"
+        return await self.process_bytes(content, content_type, filename, vector_service)
+
+    async def process_bytes(self, content: bytes, content_type: str, filename: str,
+                            vector_service: "VectorService" = None) -> DocumentProcessingResult:
         start_time = datetime.utcnow()
-
         try:
-            # Fetch document
-            content, content_type = await self.fetch_document(url)
-
             # Check if file is too large
             if (
                 content == b"__FILE_TOO_LARGE__"
@@ -463,8 +461,7 @@ class DocumentService:
                 )
 
             # First, detect document type to prioritize image processing
-            filename = Path(urlparse(url).path).name or "document"
-            doc_type = self.detect_document_type(content, content_type, filename)
+            doc_type = "pdf" if content.startswith(b"%PDF") else self.detect_document_type(content, content_type, filename)
 
             # Check for image files FIRST - always use image processing for images regardless of size
             if doc_type == "image":
@@ -477,7 +474,7 @@ class DocumentService:
                 processing_time = (datetime.utcnow() - start_time).total_seconds()
 
                 # Create a placeholder chunk to indicate this is an image
-                from app.models import DocumentChunk, ChunkMetadata
+                from backend.models import DocumentChunk, ChunkMetadata
 
                 placeholder_metadata = ChunkMetadata(
                     document_id=doc_hash,
@@ -493,6 +490,7 @@ class DocumentService:
 
                 return DocumentProcessingResult(
                     document_hash=doc_hash,
+                    direct_gemini_content=content,
                     namespace=f"image_{doc_hash}",  # Special namespace for images
                     chunks=[placeholder_chunk],
                     processing_time=processing_time,
@@ -507,9 +505,18 @@ class DocumentService:
                 content_type, filename
             )
 
+            long_pdf = False
+            if doc_type == "pdf" and Config.USE_MARKDOWN_EXTRACTION:
+                def has_more_than_ten_pages():
+                    with fitz.open(stream=content, filetype="pdf") as pdf:
+                        return len(pdf) > 10
+
+                long_pdf = await asyncio.to_thread(has_more_than_ten_pages)
+
             if (
                 file_size_mb < Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB
                 and is_gemini_supported_type
+                and not long_pdf
             ):
                 logger.info(
                     f"File size ({file_size_mb:.2f}MB) is below threshold ({Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB}MB) and type ({content_type}) is Gemini-supported, using direct Gemini upload for: {filename}"
@@ -522,7 +529,7 @@ class DocumentService:
                 processing_time = (datetime.utcnow() - start_time).total_seconds()
 
                 # Create a special result indicating direct Gemini processing
-                from app.models import DocumentChunk, ChunkMetadata
+                from backend.models import DocumentChunk, ChunkMetadata
 
                 direct_metadata = ChunkMetadata(
                     document_id=doc_hash,
@@ -560,6 +567,8 @@ class DocumentService:
             # Generate document hash for caching (SHA-256 with first 16 chars)
             doc_hash = self.generate_document_hash(content)
             namespace = self.generate_namespace_from_hash(doc_hash)
+            if long_pdf:
+                namespace += "_markdown_pages_v1"
 
             logger.info(f"Document hash: {doc_hash}, namespace: {namespace}")
 
@@ -628,7 +637,7 @@ class DocumentService:
                             final_chunks, namespace, vector_service
                         )
                         if not storage_success:
-                            logger.warning(
+                            raise RuntimeError(
                                 f"Failed to store chunks in vector database for namespace {namespace}"
                             )
 
@@ -650,10 +659,10 @@ class DocumentService:
 
                 # No timeout restrictions - removed asyncio.TimeoutError handling
                 except asyncio.CancelledError:
-                    logger.warning(f"Document processing cancelled for {url}")
+                    logger.warning(f"Document processing cancelled for {filename}")
                     raise
                 except Exception as e:
-                    logger.error(f"Document processing failed for {url}: {e}")
+                    logger.error(f"Document processing failed for {filename}: {e}")
                     raise
 
             finally:
@@ -667,7 +676,7 @@ class DocumentService:
                         )
 
         except Exception as e:
-            logger.error(f"Failed to process document from {url}: {e}")
+            logger.error(f"Failed to process document {filename}: {e}")
             raise
 
     def generate_document_hash(self, content: bytes) -> str:
@@ -1853,7 +1862,7 @@ class DocumentService:
             # Use provided vector service or create new one if not provided
             if vector_service is None:
                 # Import VectorService here to avoid circular import
-                from app.services import VectorService
+                from backend.services import VectorService
 
                 vector_service = VectorService()
                 logger.warning(
@@ -1884,16 +1893,15 @@ class DocumentService:
         """
         vector_records = []
 
-        for chunk in chunks:
-            # Generate unique ID using document hash and chunk number
-            unique_id = f"{document_hash}_{chunk.metadata.chunk_number}"
+        for number, chunk in enumerate(chunks, 1):
+            unique_id = f"{document_hash}_{number}"
 
             # Prepare metadata fields for storage
             metadata_fields = {
                 "document_id": chunk.metadata.document_id,
                 "page_number": chunk.metadata.page_number,
                 "line_number": chunk.metadata.line_number,
-                "chunk_number": chunk.metadata.chunk_number,
+                "chunk_number": number,
                 "document_type": chunk.metadata.document_type,
                 "file_name": chunk.metadata.file_name,
                 "document_hash": document_hash,
@@ -2194,7 +2202,7 @@ class VectorService:
         """Get or initialize the reranker service (lazy initialization)."""
         if self._reranker_service is None:
             # Import RerankerService here to avoid circular imports
-            from app.reranker_services import RerankerService
+            from backend.reranker_services import RerankerService
 
             self._reranker_service = RerankerService()
             logger.info("RerankerService initialized once for VectorService")
@@ -3129,7 +3137,7 @@ class LLMService:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an insurance policy expert who provides clear, concise answers in simple language.",
+                    "content": "Answer the requested task using the supplied source material. Preserve its terminology and disclose when information is missing.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -3371,6 +3379,12 @@ class LLMService:
         base_content_type = content_type.split(";")[0].strip() if content_type else ""
 
         # Try exact match first
+        media_type = base_content_type
+        if not media_type.startswith(("audio/", "video/")):
+            media_type = mimetypes.guess_type(filename)[0] or ""
+        if media_type.startswith(("audio/", "video/")):
+            return media_type
+
         if content_type in mime_mapping:
             return mime_mapping[content_type]
 

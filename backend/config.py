@@ -24,7 +24,7 @@ class Config:
     
     # CORE API CONFIGURATION
     API_KEY: str = os.getenv("API_KEY", "")
-    APP_NAME: str = os.getenv("APP_NAME", "Insurance RAG API")
+    APP_NAME: str = os.getenv("APP_NAME", "Folio Document API")
     APP_VERSION: str = os.getenv("APP_VERSION", "4.0.0")
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     HOST: str = os.getenv("HOST", "0.0.0.0")
@@ -176,7 +176,7 @@ class Config:
     
     # PROMPT MANAGEMENT
     _prompts: Optional[Dict[str, Any]] = None
-    _prompts_file_path: str = "app/prompts.json"
+    _prompts_file_path: str = os.path.join(os.path.dirname(__file__), "prompts.json")
     
     @classmethod
     def load_prompts(cls) -> Dict[str, Any]:
@@ -398,7 +398,6 @@ class Config:
             List of missing configuration keys
         """
         required_configs = [
-            ("API_KEY", cls.API_KEY),
             ("PINECONE_API_KEY", cls.PINECONE_API_KEY),
             ("PINECONE_HOST_URL", cls.PINECONE_HOST_URL),
         ]

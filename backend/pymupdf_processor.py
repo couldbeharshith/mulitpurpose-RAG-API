@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
-from app.models import DocumentChunk, ChunkMetadata
-from app.config import Config
+from backend.models import DocumentChunk, ChunkMetadata
+from backend.config import Config
 
 # Import markdown processor
 try:
-    from app.pymupdf_markdown_processor import PyMuPDFMarkdownProcessor, PyMuPDFMarkdownError
+    from backend.pymupdf_markdown_processor import PyMuPDFMarkdownProcessor, PyMuPDFMarkdownError
     MARKDOWN_PROCESSOR_AVAILABLE = True
 except ImportError:
     MARKDOWN_PROCESSOR_AVAILABLE = False
@@ -164,7 +164,7 @@ class PyMuPDFProcessor:
     def extract_text_from_pdf(self, file_path: str) -> str:
         """
         Extract text from PDF document using PyMuPDF.
-        Uses markdown extraction if available and PDF has <300 pages, otherwise falls back to plain text.
+        Uses Markdown extraction when enabled, with a plain text fallback.
         
         Args:
             file_path: Path to the PDF file
@@ -175,22 +175,9 @@ class PyMuPDFProcessor:
         Raises:
             PyMuPDFError: If PDF processing fails
         """
-        # Check page count first to decide processing method
-        doc = None
-        page_count = 0
-        try:
-            doc = fitz.open(file_path)
-            page_count = len(doc)
-            doc.close()
-            doc = None
-        except Exception as e:
-            logger.warning(f"Failed to check page count for {file_path}: {e}")
-            page_count = 0
-        
-        # Try markdown extraction first if available and PDF has <300 pages
-        if self.use_markdown and self.markdown_processor and page_count < 300:
+        if self.use_markdown and self.markdown_processor:
             try:
-                logger.debug(f"Attempting markdown extraction for PDF with {page_count} pages: {file_path}")
+                logger.debug(f"Attempting markdown extraction for PDF: {file_path}")
                 markdown_content = self.markdown_processor.extract_markdown_from_pdf(file_path, use_multiprocessing=True)
                 logger.info(f"Successfully extracted {len(markdown_content)} characters of markdown from PDF")
                 return markdown_content
@@ -198,9 +185,7 @@ class PyMuPDFProcessor:
                 logger.warning(f"Markdown extraction failed: {e.message}, falling back to plain text")
             except Exception as e:
                 logger.warning(f"Unexpected error in markdown extraction: {e}, falling back to plain text")
-        elif self.use_markdown and self.markdown_processor and page_count >= 300:
-            logger.info(f"PDF has {page_count} pages (≥300), using plain text extraction instead of markdown")
-        
+
         # Fallback to plain text extraction
         doc = None
         try:
@@ -372,23 +357,10 @@ class PyMuPDFProcessor:
             
             chunks = []
             
-            if doc_type == '.pdf':
-                # Check page count first to decide processing method
-                doc = None
-                page_count = 0
-                try:
-                    doc = fitz.open(file_path)
-                    page_count = len(doc)
-                    doc.close()
-                    doc = None
-                except Exception as e:
-                    logger.warning(f"Failed to check page count for {file_path}: {e}")
-                    page_count = 0
-                
-                # For PDFs, try markdown extraction first if available and <300 pages
-                if self.use_markdown and self.markdown_processor and page_count < 300:
+            if normalized_type == 'pdf':
+                if self.use_markdown and self.markdown_processor:
                     try:
-                        logger.debug(f"Attempting markdown chunk extraction for PDF with {page_count} pages: {file_path}")
+                        logger.debug(f"Attempting markdown chunk extraction for PDF: {file_path}")
                         chunks = self.markdown_processor.process_document_to_markdown_chunks(file_path, document_id, use_multiprocessing=True)
                         logger.info(f"Successfully created {len(chunks)} markdown chunks from PDF")
                         return chunks
@@ -396,9 +368,7 @@ class PyMuPDFProcessor:
                         logger.warning(f"Markdown chunk extraction failed: {e.message}, falling back to plain text chunks")
                     except Exception as e:
                         logger.warning(f"Unexpected error in markdown chunk extraction: {e}, falling back to plain text chunks")
-                elif self.use_markdown and self.markdown_processor and page_count >= 300:
-                    logger.info(f"PDF has {page_count} pages (≥300), using plain text extraction instead of markdown")
-                
+
                 # Fallback to plain text page-by-page processing for PDFs
                 chunks = self._process_pdf_to_chunks(file_path, document_id)
             else:

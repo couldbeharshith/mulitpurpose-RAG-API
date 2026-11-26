@@ -1,29 +1,38 @@
-"""
-Insurance RAG API - Main FastAPI Application
-Simplified architecture with consolidated services
-"""
+"""FastAPI application for the Folio source workspace and batch API."""
 
-from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from datetime import datetime, timezone
+import asyncio
+import base64
+import hashlib
+import json
 import logging
+import mimetypes
+import re
 import time
 import uuid
-import asyncio
-from typing import Optional
+from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
 
-from app.config import Config
-from app.models import HackRXRequest, HackRXResponse, ErrorResponse
-from app.services import (
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
+
+from backend.config import Config
+from backend.models import HackRXRequest, HackRXResponse, ErrorResponse, ChatInput, DocumentProcessingResult
+from backend.services import (
     DocumentService,
     VectorService,
     LLMService,
     RelevanceService,
     QueryExpansionService,
 )
-from app.utils import (
+from backend.utils import (
     sanitize_input,
     validate_bearer_token,
     log_performance_metrics,
@@ -97,7 +106,7 @@ logger.info(f"Debug mode: {debug_mode}")
 # Create FastAPI app with simplified configuration
 app = FastAPI(
     title=app_name,
-    description="A high-accuracy RAG-based API for processing insurance policy queries with URL-based document processing and Pinecone vector storage",
+    description="Source-grounded question answering for documents, spreadsheets, presentations and other sources.",
     version=app_version,
     docs_url="/docs" if debug_mode else None,
     redoc_url="/redoc" if debug_mode else None,
@@ -105,6 +114,16 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_url="/openapi.json" if debug_mode else None,
 )
+
+workspace_dir = Path(__file__).resolve().parents[1] / "frontend" / "out"
+workspace_csp = None
+if (workspace_dir / "index.html").is_file():
+    html = (workspace_dir / "index.html").read_text(encoding="utf-8")
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, flags=re.DOTALL)
+    hashes = ["'sha256-" + base64.b64encode(hashlib.sha256(s.encode()).digest()).decode() + "'"
+              for s in scripts if s]
+    workspace_csp = "default-src 'self'; script-src 'self' " + " ".join(hashes) + "; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'"
+    app.mount("/workspace", StaticFiles(directory=workspace_dir, html=True), name="workspace")
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
@@ -142,6 +161,9 @@ async def security_middleware(request: Request, call_next):
     # Add security headers
     for header_name, header_value in Config.SECURITY_HEADERS.items():
         response.headers[header_name] = header_value
+
+    if workspace_csp and request.url.path.startswith("/workspace/"):
+        response.headers["Content-Security-Policy"] = workspace_csp
 
     # Add platform-specific headers
     process_time = time.time() - start_time
@@ -185,37 +207,20 @@ async def verify_bearer_token(authorization: Optional[str] = Header(None)):
 async def hackrx_run(
     request: HackRXRequest, authorization: Optional[str] = Header(None)
 ):
-    """
-    HackRX API endpoint for processing insurance policy documents from URLs.
+    await verify_bearer_token(authorization)
+    try:
+        document = await document_service.process_document_from_url(request.documents, vector_service)
+    except Exception as exc:
+        raise HTTPException(500, detail=ErrorResponse(error_type=type(exc).__name__, message=str(exc),
+                            timestamp=datetime.now(timezone.utc).isoformat(), request_id=str(uuid.uuid4())).model_dump()) from exc
+    return await answer_document(document, request.questions)
 
-    Requires Bearer token authentication and processes documents from URLs
-    to answer insurance policy questions with high accuracy using consolidated services.
-    """
+
+async def answer_document(document_result: DocumentProcessingResult, questions: list[str]):
     request_id = str(uuid.uuid4())
     start_time = time.time()
-
-    logger.info(
-        f"HackRX request started: {request_id} with {len(request.questions)} questions"
-    )
-
-    # Log request data for analysis
-    logger.info(f"REQUEST DATA - URL: {request.documents}")
-    logger.info(f"REQUEST DATA - Questions: {request.questions}")
-
+    sanitized_questions = [sanitize_input(q) for q in questions]
     try:
-        # Verify authentication
-        await verify_bearer_token(authorization)
-
-        # Sanitize all questions for processing
-        sanitized_questions = [sanitize_input(q) for q in request.questions]
-        logger.info(f"Sanitized {len(sanitized_questions)} questions for processing")
-
-        # Process document
-        logger.info(f"Processing document from URL")
-        document_result = await document_service.process_document_from_url(
-            request.documents, vector_service
-        )
-
         # Check if this is an image document and handle it specially
         if document_result.namespace.startswith("image_") or (
             document_result.chunks
@@ -235,10 +240,7 @@ async def hackrx_run(
                         f"Processing image question {question_index + 1}: {question[:100]}..."
                     )
 
-                    # Fetch the image file again for vision processing
-                    content, content_type = await document_service.fetch_document(
-                        request.documents
-                    )
+                    content = document_result.direct_gemini_content
 
                     # Save image to temporary file for processing
                     import tempfile
@@ -310,13 +312,13 @@ async def hackrx_run(
                 request_id=request_id,
                 endpoint="/api/v1/hackrx/run",
                 processing_time=processing_time,
-                questions_count=len(request.questions),
+                questions_count=len(questions),
                 success=True,
             )
 
             logger.info(
                 f"HackRX image request completed: {request_id} in {processing_time:.2f}s "
-                f"({successful_questions}/{len(request.questions)} questions successful)"
+                f"({successful_questions}/{len(questions)} questions successful)"
             )
 
             # Log response data for analysis
@@ -404,13 +406,13 @@ async def hackrx_run(
                 request_id=request_id,
                 endpoint="/api/v1/hackrx/run",
                 processing_time=processing_time,
-                questions_count=len(request.questions),
+                questions_count=len(questions),
                 success=True,
             )
 
             logger.info(
                 f"HackRX direct Gemini request completed: {request_id} in {processing_time:.2f}s "
-                f"({successful_questions}/{len(request.questions)} questions successful)"
+                f"({successful_questions}/{len(questions)} questions successful)"
             )
 
             # Log response data for analysis
@@ -424,7 +426,7 @@ async def hackrx_run(
             zip_rejection_message = "ZIP files cannot be processed using this API."
 
             # Return ZIP rejection message for all questions
-            final_answers = [zip_rejection_message] * len(request.questions)
+            final_answers = [zip_rejection_message] * len(questions)
 
             processing_time = time.time() - start_time
 
@@ -433,13 +435,13 @@ async def hackrx_run(
                 request_id=request_id,
                 endpoint="/api/v1/hackrx/run",
                 processing_time=processing_time,
-                questions_count=len(request.questions),
+                questions_count=len(questions),
                 success=True,
             )
 
             logger.info(
                 f"HackRX request completed (ZIP rejected): {request_id} in {processing_time:.2f}s "
-                f"({len(request.questions)} questions, ZIP file rejected)"
+                f"({len(questions)} questions, ZIP file rejected)"
             )
 
             return HackRXResponse(answers=final_answers)
@@ -452,7 +454,7 @@ async def hackrx_run(
             )
 
             # Return the same error message for ALL questions
-            final_answers = [file_too_large_message] * len(request.questions)
+            final_answers = [file_too_large_message] * len(questions)
 
             processing_time = time.time() - start_time
 
@@ -461,13 +463,13 @@ async def hackrx_run(
                 request_id=request_id,
                 endpoint="/api/v1/hackrx/run",
                 processing_time=processing_time,
-                questions_count=len(request.questions),
+                questions_count=len(questions),
                 success=True,
             )
 
             logger.info(
                 f"HackRX request completed (file too large): {request_id} in {processing_time:.2f}s "
-                f"({len(request.questions)} questions, all answered with file too large message)"
+                f"({len(questions)} questions, all answered with file too large message)"
             )
 
             return HackRXResponse(answers=final_answers)
@@ -685,7 +687,7 @@ async def hackrx_run(
                         answer = "I apologize, but I encountered an error while generating the answer. Please try rephrasing your question."
                 else:
                     # Fallback when no chunks are found
-                    answer = "Please provide the policy context.\n\nI cannot answer this question without the actual policy document or a summary of its relevant sections. The document may still be processing or the question may not be related to the provided document content."
+                    answer = "I could not find a passage that answers this question. Try a more specific term from the source."
 
                 question_time = time.time() - question_start_time
                 logger.debug(
@@ -751,13 +753,13 @@ async def hackrx_run(
             request_id=request_id,
             endpoint="/api/v1/hackrx/run",
             processing_time=processing_time,
-            questions_count=len(request.questions),
+            questions_count=len(questions),
             success=True,
         )
 
         logger.info(
             f"HackRX request completed: {request_id} in {processing_time:.2f}s "
-            f"({successful_questions}/{len(request.questions)} questions successful, "
+            f"({successful_questions}/{len(questions)} questions successful, "
             f"document cached: {document_result.cached if document_result else 'N/A'})"
         )
 
@@ -781,9 +783,7 @@ async def hackrx_run(
             request_id=request_id,
             endpoint="/api/v1/hackrx/run",
             processing_time=processing_time,
-            questions_count=(
-                len(request.questions) if hasattr(request, "questions") else 0
-            ),
+            questions_count=len(questions),
             success=False,
         )
 
@@ -804,11 +804,104 @@ async def hackrx_run(
         )
 
 
+# Small, opaque handles let indexed sources serve follow-ups without another upload.
+indexed_sources: OrderedDict[str, tuple[str, str]] = OrderedDict()
+
+
+@app.get("/api/v1/workspace")
+async def workspace_settings():
+    return {
+        "requires_token": bool(Config.API_KEY),
+        "max_file_mb": Config.MAX_DOCUMENT_SIZE_MB,
+        "direct_media_mb": Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB,
+    }
+
+
+@app.post("/api/v1/chat", dependencies=[Depends(verify_bearer_token)])
+async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None),
+               url: Optional[str] = Form(None), source_id: Optional[str] = Form(None)):
+    if sum(bool(value) for value in (file, url, source_id)) != 1:
+        raise HTTPException(422, "Choose one file or one source link.")
+    try:
+        chat_input = ChatInput.model_validate_json(payload)
+        if url:
+            url = HackRXRequest(documents=url, questions=chat_input.questions).documents
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_input=False, include_context=False)[0]["msg"]) from exc
+
+    if source_id:
+        stored = indexed_sources.get(source_id)
+        if not stored:
+            raise HTTPException(410, "Reattach the source to continue this conversation.")
+        indexed_sources.move_to_end(source_id)
+        doc_hash, namespace = stored
+        document = DocumentProcessingResult(document_hash=doc_hash, namespace=namespace,
+                                            chunks=[], cached=True, processing_time=0)
+    else:
+        if file:
+            limit = Config.MAX_DOCUMENT_SIZE_MB * 1024 * 1024
+            if file.size is not None and file.size > limit:
+                raise HTTPException(413, f"Choose a file up to {Config.MAX_DOCUMENT_SIZE_MB} MB.")
+            content = await file.read() if file.size is not None else await file.read(limit + 1)
+            if len(content) > limit:
+                raise HTTPException(413, f"Choose a file up to {Config.MAX_DOCUMENT_SIZE_MB} MB.")
+            filename = Path(file.filename or "source").name
+            content_type = file.content_type or ""
+        else:
+            filename = Path(urlparse(url).path).name or "source"
+            try:
+                content, content_type = await document_service.fetch_document(url)
+            except Exception as exc:
+                raise HTTPException(422, "Could not open this link. Use a direct file link or upload the file.") from exc
+        if content_type == "application/oversized":
+            raise HTTPException(413, f"Choose a file up to {Config.MAX_DOCUMENT_SIZE_MB} MB.")
+        if not content:
+            raise HTTPException(422, "This source is empty. Choose a file with readable content.")
+        media_type = content_type.split(";")[0]
+        if not media_type.startswith(("audio/", "video/")):
+            media_type = mimetypes.guess_type(filename)[0] or media_type
+        if media_type.startswith(("audio/", "video/")):
+            if len(content) >= Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB * 1024**2:
+                raise HTTPException(415, "This clip exceeds the direct media limit. Upload its transcript instead.")
+            content_type = media_type
+        try:
+            document = await document_service.process_bytes(content, content_type, filename, vector_service)
+        except Exception as exc:
+            logger.exception("Could not prepare chat source")
+            raise HTTPException(422, "Could not read or index this source. Check the file and the server's provider settings.") from exc
+        if document.document_hash == "zip_rejected":
+            raise HTTPException(415, "Extract the archive and choose one of its documents.")
+        if not document.cached and not document.chunks:
+            raise HTTPException(422, "No readable content was found. For a scanned document, try an OCR or text version.")
+
+    questions = chat_input.questions
+    if chat_input.history:
+        history = json.dumps([turn.model_dump() for turn in chat_input.history], ensure_ascii=False)
+        async def resolve(question: str):
+            prompt = Config.get_prompt("chat_followup", question=question, history=history)
+            return await llm_service._try_gemini_request_without_tools(prompt)
+        try:
+            questions = await asyncio.gather(*(resolve(q) for q in questions))
+        except Exception as exc:
+            raise HTTPException(502, "Could not resolve the follow-up. Try sending it again.") from exc
+    result = await answer_document(document, questions)
+    if any(answer.startswith("I apologize, but") for answer in result.answers):
+        raise HTTPException(502, "The answer service could not finish. Check the provider settings or try again.")
+    if not source_id and document.namespace.startswith("doc_"):
+        source_id = uuid.uuid4().hex
+        indexed_sources[source_id] = (document.document_hash, document.namespace)
+        if len(indexed_sources) > 256:
+            indexed_sources.popitem(last=False)
+    return {"answers": result.answers, "source_id": source_id}
+
+
 @app.get("/")
-async def root():
+async def root(request: Request):
     """
     Root endpoint with API information
     """
+    if workspace_csp and "text/html" in request.headers.get("accept", ""):
+        return RedirectResponse("/workspace/")
     response_data = {
         "message": app_name,
         "version": app_version,
@@ -885,7 +978,7 @@ if __name__ == "__main__":
     logger.info(f"  Debug mode: {debug_mode}")
 
     uvicorn.run(
-        "app.main:app",
+        "backend.main:app",
         host=host,
         port=port,
         workers=workers,

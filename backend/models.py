@@ -142,11 +142,49 @@ class ErrorResponse(BaseModel):
 
 # HACKRX API MODELS
 
-class HackRXRequest(BaseModel):
-    """Request model for HackRX API endpoint."""
-    documents: str = Field(..., description="URL to the policy document", max_length=2048)
+class QuestionBatch(BaseModel):
     questions: List[str] = Field(..., min_items=1, max_items=50, description="List of questions to answer")
-    
+
+    @validator('questions')
+    def validate_questions(cls, v):
+        """Validate questions list with security checks."""
+        if not v or not isinstance(v, list):
+            raise ValueError('Questions list is required')
+
+        # Validate each question
+        sanitized_questions = []
+        for i, question in enumerate(v, 1):
+            if not isinstance(question, str):
+                raise ValueError(f'Question {i} must be a string')
+
+            question = question.strip()
+            if not question:
+                raise ValueError(f'Question {i} cannot be empty')
+
+            if len(question) > 1000:
+                raise ValueError(f'Question {i} exceeds maximum length of 1000 characters')
+
+            if len(question) < 3:
+                raise ValueError(f'Question {i} is too short (minimum 3 characters)')
+
+            # Basic security checks
+            dangerous_patterns = [
+                '<script', 'javascript:', 'vbscript:', '<iframe', r'on\w+\s*=',
+                'drop table', 'insert into', 'delete from', 'union select'
+            ]
+            question_lower = question.lower()
+            for pattern in dangerous_patterns:
+                if re.search(pattern, question_lower):
+                    raise ValueError(f'Question {i} contains potentially harmful content')
+
+            sanitized_questions.append(question)
+
+        return sanitized_questions
+
+
+class HackRXRequest(QuestionBatch):
+    documents: str = Field(..., description="HTTP(S) source URL", max_length=2048)
+
     @validator('documents')
     def validate_url(cls, v):
         """Validate document URL with comprehensive security checks."""
@@ -188,41 +226,13 @@ class HackRXRequest(BaseModel):
         
         return v
     
-    @validator('questions')
-    def validate_questions(cls, v):
-        """Validate questions list with security checks."""
-        if not v or not isinstance(v, list):
-            raise ValueError('Questions list is required')
-        
-        # Validate each question
-        sanitized_questions = []
-        for i, question in enumerate(v, 1):
-            if not isinstance(question, str):
-                raise ValueError(f'Question {i} must be a string')
-            
-            question = question.strip()
-            if not question:
-                raise ValueError(f'Question {i} cannot be empty')
-            
-            if len(question) > 1000:
-                raise ValueError(f'Question {i} exceeds maximum length of 1000 characters')
-            
-            if len(question) < 3:
-                raise ValueError(f'Question {i} is too short (minimum 3 characters)')
-            
-            # Basic security checks
-            dangerous_patterns = [
-                '<script', 'javascript:', 'vbscript:', '<iframe', r'on\w+\s*=',
-                'drop table', 'insert into', 'delete from', 'union select'
-            ]
-            question_lower = question.lower()
-            for pattern in dangerous_patterns:
-                if re.search(pattern, question_lower):
-                    raise ValueError(f'Question {i} contains potentially harmful content')
-            
-            sanitized_questions.append(question)
-        
-        return sanitized_questions
+class ChatTurn(BaseModel):
+    question: str = Field(max_length=1000)
+    answer: str = Field(max_length=4000)
+
+
+class ChatInput(QuestionBatch):
+    history: List[ChatTurn] = Field(default_factory=list, max_length=8)
 
 
 class HackRXResponse(BaseModel):

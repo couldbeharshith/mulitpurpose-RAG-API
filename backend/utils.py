@@ -136,8 +136,10 @@ def validate_bearer_token(authorization_header: Optional[str]) -> bool:
     Returns:
         True if token is valid, False otherwise
     """
-    from app.config import Config
+    from backend.config import Config
     
+    if not Config.API_KEY:
+        return True
     if not authorization_header or not isinstance(authorization_header, str):
         return False
     
