@@ -9,6 +9,11 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlparse
 import mimetypes
+import hashlib
+import base64
+import re
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 import json
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -112,6 +117,16 @@ app = FastAPI(
     openapi_url="/openapi.json" if debug_mode else None,
 )
 
+workspace_dir = Path(__file__).resolve().parents[1] / "frontend" / "out"
+workspace_csp = None
+if (workspace_dir / "index.html").is_file():
+    html = (workspace_dir / "index.html").read_text(encoding="utf-8")
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, flags=re.DOTALL)
+    hashes = ["'sha256-" + base64.b64encode(hashlib.sha256(s.encode()).digest()).decode() + "'"
+              for s in scripts if s]
+    workspace_csp = "default-src 'self'; script-src 'self' " + " ".join(hashes) + "; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'"
+    app.mount("/workspace", StaticFiles(directory=workspace_dir, html=True), name="workspace")
+
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # Add CORS middleware
@@ -148,6 +163,9 @@ async def security_middleware(request: Request, call_next):
     # Add security headers
     for header_name, header_value in Config.SECURITY_HEADERS.items():
         response.headers[header_name] = header_value
+
+    if workspace_csp and request.url.path.startswith("/workspace/"):
+        response.headers["Content-Security-Policy"] = workspace_csp
 
     # Add platform-specific headers
     process_time = time.time() - start_time
@@ -878,10 +896,12 @@ async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None)
 
 
 @app.get("/")
-async def root():
+async def root(request: Request):
     """
     Root endpoint with API information
     """
+    if workspace_csp and "text/html" in request.headers.get("accept", ""):
+        return RedirectResponse("/workspace/")
     response_data = {
         "message": app_name,
         "version": app_version,

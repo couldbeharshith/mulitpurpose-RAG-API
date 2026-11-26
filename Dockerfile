@@ -1,4 +1,13 @@
 # Optimized Dockerfile for Hugging Face Spaces
+FROM node:22-bookworm-slim AS workspace
+COPY --from=oven/bun:1.4.5 /usr/local/bin/bun /usr/local/bin/bun
+WORKDIR /workspace
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY frontend/package.json frontend/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY frontend/ ./
+RUN bun run build
+
 FROM python:3.11-slim
 
 # Set working directory
@@ -23,7 +32,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY backend/ ./backend/
+COPY app.py .
+COPY --from=workspace /workspace/out ./frontend/out
 
 # Optional: Test Tesseract installation (uncomment to run during build)
 # RUN python test_tesseract_docker.py
