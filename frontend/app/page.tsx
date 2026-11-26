@@ -157,7 +157,7 @@ export default function Workspace() {
     <aside className="rail"><button className="brand" aria-label="Folio home" onClick={() => select(null)}><Mark />Folio</button>{navigation}</aside>
     <main className="main">
       <header className="topbar"><button className="mobile-toggle icon-btn" aria-label="Open conversations" onClick={() => setPanel("navigation")}><Menu /></button>
-        <span className="crumb"><FolderOpen />Workspace</span><ChevronRight className="crumb-sep" /><span className="crumb-current">{chat ? "Conversation" : "New conversation"}</span>
+        <button className="mobile-brand" onClick={() => select(null)} aria-label="Folio home"><Mark />Folio</button><span className="crumb"><FolderOpen />Workspace</span><ChevronRight className="crumb-sep" /><span className="crumb-current">{chat ? "Conversation" : "New conversation"}</span>
         <button className="access-btn" onClick={openAccess}><Settings2 />Access</button></header>
       {!chat ? <div className="landing-scroll"><div className="landing">
         <section className="intro"><div><h1>Open a source.</h1><p>Bring a document, a dataset, or a link.<br />Ask questions and follow the details.</p></div><SourceArt /></section>
