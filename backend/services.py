@@ -10,6 +10,7 @@ import logging
 import asyncio
 import hashlib
 import itertools
+import mimetypes
 import aiohttp
 import tempfile
 import time
@@ -340,6 +341,7 @@ class DocumentService:
             # Audio
             "audio/wav",
             "audio/mp3",
+            "audio/mpeg",
             "audio/aiff",
             "audio/aac",
             "audio/ogg",
@@ -441,12 +443,14 @@ class DocumentService:
         Returns:
             DocumentProcessingResult with chunks and metadata
         """
+        content, content_type = await self.fetch_document(url)
+        filename = Path(urlparse(url).path).name or "document"
+        return await self.process_bytes(content, content_type, filename, vector_service)
+
+    async def process_bytes(self, content: bytes, content_type: str, filename: str,
+                            vector_service: "VectorService" = None) -> DocumentProcessingResult:
         start_time = datetime.utcnow()
-
         try:
-            # Fetch document
-            content, content_type = await self.fetch_document(url)
-
             # Check if file is too large
             if (
                 content == b"__FILE_TOO_LARGE__"
@@ -463,8 +467,7 @@ class DocumentService:
                 )
 
             # First, detect document type to prioritize image processing
-            filename = Path(urlparse(url).path).name or "document"
-            doc_type = self.detect_document_type(content, content_type, filename)
+            doc_type = "pdf" if content.startswith(b"%PDF") else self.detect_document_type(content, content_type, filename)
 
             # Check for image files FIRST - always use image processing for images regardless of size
             if doc_type == "image":
@@ -493,6 +496,7 @@ class DocumentService:
 
                 return DocumentProcessingResult(
                     document_hash=doc_hash,
+                    direct_gemini_content=content,
                     namespace=f"image_{doc_hash}",  # Special namespace for images
                     chunks=[placeholder_chunk],
                     processing_time=processing_time,
@@ -639,7 +643,7 @@ class DocumentService:
                             final_chunks, namespace, vector_service
                         )
                         if not storage_success:
-                            logger.warning(
+                            raise RuntimeError(
                                 f"Failed to store chunks in vector database for namespace {namespace}"
                             )
 
@@ -661,10 +665,10 @@ class DocumentService:
 
                 # No timeout restrictions - removed asyncio.TimeoutError handling
                 except asyncio.CancelledError:
-                    logger.warning(f"Document processing cancelled for {url}")
+                    logger.warning(f"Document processing cancelled for {filename}")
                     raise
                 except Exception as e:
-                    logger.error(f"Document processing failed for {url}: {e}")
+                    logger.error(f"Document processing failed for {filename}: {e}")
                     raise
 
             finally:
@@ -678,7 +682,7 @@ class DocumentService:
                         )
 
         except Exception as e:
-            logger.error(f"Failed to process document from {url}: {e}")
+            logger.error(f"Failed to process document {filename}: {e}")
             raise
 
     def generate_document_hash(self, content: bytes) -> str:
@@ -3139,7 +3143,7 @@ class LLMService:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an insurance policy expert who provides clear, concise answers in simple language.",
+                    "content": "Answer the requested task using the supplied source material. Preserve its terminology and disclose when information is missing.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -3381,6 +3385,12 @@ class LLMService:
         base_content_type = content_type.split(";")[0].strip() if content_type else ""
 
         # Try exact match first
+        media_type = base_content_type
+        if not media_type.startswith(("audio/", "video/")):
+            media_type = mimetypes.guess_type(filename)[0] or ""
+        if media_type.startswith(("audio/", "video/")):
+            return media_type
+
         if content_type in mime_mapping:
             return mime_mapping[content_type]
 
