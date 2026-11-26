@@ -844,7 +844,7 @@ async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None)
             limit = Config.MAX_DOCUMENT_SIZE_MB * 1024 * 1024
             if file.size is not None and file.size > limit:
                 raise HTTPException(413, f"Choose a file up to {Config.MAX_DOCUMENT_SIZE_MB} MB.")
-            content = await file.read(limit + 1)
+            content = await file.read() if file.size is not None else await file.read(limit + 1)
             if len(content) > limit:
                 raise HTTPException(413, f"Choose a file up to {Config.MAX_DOCUMENT_SIZE_MB} MB.")
             filename = Path(file.filename or "source").name
@@ -873,6 +873,8 @@ async def chat(payload: str = Form(...), file: Optional[UploadFile] = File(None)
             raise HTTPException(422, "Could not read or index this source. Check the file and the server's provider settings.") from exc
         if document.document_hash == "zip_rejected":
             raise HTTPException(415, "Extract the archive and choose one of its documents.")
+        if not document.cached and not document.chunks:
+            raise HTTPException(422, "No readable content was found. For a scanned document, try an OCR or text version.")
 
     questions = chat_input.questions
     if chat_input.history:
