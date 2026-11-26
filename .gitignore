@@ -5,3 +5,9 @@ __pycache__/
 __pypackages__/
 
 test.md
+agent_temp/
+temp/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+*.tsbuildinfo

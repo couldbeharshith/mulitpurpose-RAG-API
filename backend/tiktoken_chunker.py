@@ -11,8 +11,8 @@ import tiktoken
 from typing import List, Tuple
 from dataclasses import dataclass
 
-from app.models import DocumentChunk, ChunkMetadata
-from app.config import Config
+from backend.models import DocumentChunk, ChunkMetadata
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 

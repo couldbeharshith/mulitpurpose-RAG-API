@@ -20,8 +20,8 @@ except ImportError:
     PYMUPDF4LLM_AVAILABLE = False
     to_markdown = None
 
-from app.models import DocumentChunk, ChunkMetadata
-from app.config import Config
+from backend.models import DocumentChunk, ChunkMetadata
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 

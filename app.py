@@ -6,14 +6,14 @@ This file is required by Hugging Face Spaces to run the application
 import os
 import sys
 
-# Add the app directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+# Include the repository root for the backend package
+sys.path.insert(0, os.path.dirname(__file__))
 
 # Set platform environment variable for Hugging Face Spaces
 os.environ['PLATFORM'] = 'huggingface'
 
 # Import and run the FastAPI app
-from app.main import app
+from backend.main import app
 
 if __name__ == "__main__":
     import uvicorn

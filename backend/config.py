@@ -176,7 +176,7 @@ class Config:
     
     # PROMPT MANAGEMENT
     _prompts: Optional[Dict[str, Any]] = None
-    _prompts_file_path: str = "app/prompts.json"
+    _prompts_file_path: str = os.path.join(os.path.dirname(__file__), "prompts.json")
     
     @classmethod
     def load_prompts(cls) -> Dict[str, Any]:

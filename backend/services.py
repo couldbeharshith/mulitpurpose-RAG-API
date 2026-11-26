@@ -44,16 +44,16 @@ from groq import Groq
 from pinecone import Pinecone
 
 # Internal imports
-from app.config import Config
-from app.models import (
+from backend.config import Config
+from backend.models import (
     DocumentChunk,
     ChunkMetadata,
     RelevantChunk,
     DocumentProcessingResult,
     VectorSearchResult
 )
-from app.pymupdf_processor import PyMuPDFProcessor, PyMuPDFError
-from app.tiktoken_chunker import TikTokenChunker, TikTokenError, create_fallback_chunker
+from backend.pymupdf_processor import PyMuPDFProcessor, PyMuPDFError
+from backend.tiktoken_chunker import TikTokenChunker, TikTokenError, create_fallback_chunker
 
 
 logger = logging.getLogger(__name__)
@@ -477,7 +477,7 @@ class DocumentService:
                 processing_time = (datetime.utcnow() - start_time).total_seconds()
 
                 # Create a placeholder chunk to indicate this is an image
-                from app.models import DocumentChunk, ChunkMetadata
+                from backend.models import DocumentChunk, ChunkMetadata
 
                 placeholder_metadata = ChunkMetadata(
                     document_id=doc_hash,
@@ -522,7 +522,7 @@ class DocumentService:
                 processing_time = (datetime.utcnow() - start_time).total_seconds()
 
                 # Create a special result indicating direct Gemini processing
-                from app.models import DocumentChunk, ChunkMetadata
+                from backend.models import DocumentChunk, ChunkMetadata
 
                 direct_metadata = ChunkMetadata(
                     document_id=doc_hash,
@@ -1853,7 +1853,7 @@ class DocumentService:
             # Use provided vector service or create new one if not provided
             if vector_service is None:
                 # Import VectorService here to avoid circular import
-                from app.services import VectorService
+                from backend.services import VectorService
 
                 vector_service = VectorService()
                 logger.warning(
@@ -2194,7 +2194,7 @@ class VectorService:
         """Get or initialize the reranker service (lazy initialization)."""
         if self._reranker_service is None:
             # Import RerankerService here to avoid circular imports
-            from app.reranker_services import RerankerService
+            from backend.reranker_services import RerankerService
 
             self._reranker_service = RerankerService()
             logger.info("RerankerService initialized once for VectorService")

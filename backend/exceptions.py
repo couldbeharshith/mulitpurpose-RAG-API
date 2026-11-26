@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Union
 from fastapi import HTTPException
-from app.models import ErrorResponse
+from backend.models import ErrorResponse
 
 
 # BASE EXCEPTION CLASSES

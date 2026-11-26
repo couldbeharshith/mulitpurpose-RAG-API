@@ -14,16 +14,16 @@ import asyncio
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from app.config import Config
-from app.models import HackRXRequest, HackRXResponse, ErrorResponse
-from app.services import (
+from backend.config import Config
+from backend.models import HackRXRequest, HackRXResponse, ErrorResponse
+from backend.services import (
     DocumentService,
     VectorService,
     LLMService,
     RelevanceService,
     QueryExpansionService,
 )
-from app.utils import (
+from backend.utils import (
     sanitize_input,
     validate_bearer_token,
     log_performance_metrics,
@@ -885,7 +885,7 @@ if __name__ == "__main__":
     logger.info(f"  Debug mode: {debug_mode}")
 
     uvicorn.run(
-        "app.main:app",
+        "backend.main:app",
         host=host,
         port=port,
         workers=workers,

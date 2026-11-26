@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
-from app.models import DocumentChunk, ChunkMetadata
-from app.config import Config
+from backend.models import DocumentChunk, ChunkMetadata
+from backend.config import Config
 
 # Import markdown processor
 try:
-    from app.pymupdf_markdown_processor import PyMuPDFMarkdownProcessor, PyMuPDFMarkdownError
+    from backend.pymupdf_markdown_processor import PyMuPDFMarkdownProcessor, PyMuPDFMarkdownError
     MARKDOWN_PROCESSOR_AVAILABLE = True
 except ImportError:
     MARKDOWN_PROCESSOR_AVAILABLE = False
