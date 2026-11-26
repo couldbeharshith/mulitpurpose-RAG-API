@@ -507,9 +507,18 @@ class DocumentService:
                 content_type, filename
             )
 
+            long_pdf = False
+            if doc_type == "pdf" and Config.USE_MARKDOWN_EXTRACTION:
+                def has_more_than_ten_pages():
+                    with fitz.open(stream=content, filetype="pdf") as pdf:
+                        return len(pdf) > 10
+
+                long_pdf = await asyncio.to_thread(has_more_than_ten_pages)
+
             if (
                 file_size_mb < Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB
                 and is_gemini_supported_type
+                and not long_pdf
             ):
                 logger.info(
                     f"File size ({file_size_mb:.2f}MB) is below threshold ({Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB}MB) and type ({content_type}) is Gemini-supported, using direct Gemini upload for: {filename}"
@@ -560,6 +569,8 @@ class DocumentService:
             # Generate document hash for caching (SHA-256 with first 16 chars)
             doc_hash = self.generate_document_hash(content)
             namespace = self.generate_namespace_from_hash(doc_hash)
+            if long_pdf:
+                namespace += "_markdown_pages_v1"
 
             logger.info(f"Document hash: {doc_hash}, namespace: {namespace}")
 
@@ -1884,16 +1895,15 @@ class DocumentService:
         """
         vector_records = []
 
-        for chunk in chunks:
-            # Generate unique ID using document hash and chunk number
-            unique_id = f"{document_hash}_{chunk.metadata.chunk_number}"
+        for number, chunk in enumerate(chunks, 1):
+            unique_id = f"{document_hash}_{number}"
 
             # Prepare metadata fields for storage
             metadata_fields = {
                 "document_id": chunk.metadata.document_id,
                 "page_number": chunk.metadata.page_number,
                 "line_number": chunk.metadata.line_number,
-                "chunk_number": chunk.metadata.chunk_number,
+                "chunk_number": number,
                 "document_type": chunk.metadata.document_type,
                 "file_name": chunk.metadata.file_name,
                 "document_hash": document_hash,
