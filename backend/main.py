@@ -1,29 +1,27 @@
-"""
-Insurance RAG API - Main FastAPI Application
-Simplified architecture with consolidated services
-"""
+"""FastAPI application for the Folio source workspace and batch API."""
 
-from fastapi import FastAPI, Request, HTTPException, Header, Depends, Form, UploadFile, File
-from pydantic import ValidationError
-from collections import OrderedDict
-from pathlib import Path
-from urllib.parse import urlparse
-import mimetypes
-import hashlib
+import asyncio
 import base64
-import re
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+import hashlib
 import json
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from datetime import datetime, timezone
 import logging
+import mimetypes
+import re
 import time
 import uuid
-import asyncio
-from typing import Optional
+from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
+
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from backend.config import Config
 from backend.models import HackRXRequest, HackRXResponse, ErrorResponse, ChatInput, DocumentProcessingResult

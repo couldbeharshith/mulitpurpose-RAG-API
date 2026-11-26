@@ -45,56 +45,56 @@ def process_batch_to_markdown(batch):
 class PyMuPDFMarkdownProcessor:
     """
     Fast PDF to markdown processor using PyMuPDF4LLM with multiprocessing support.
-    
+
     Provides efficient markdown extraction from PDF documents with proper formatting
     and structure preservation.
     """
-    
+
     def __init__(self):
         """Initialize PyMuPDF markdown processor."""
         self.supported_formats = ['.pdf']
-        
+
         if not PYMUPDF4LLM_AVAILABLE:
             logger.warning("pymupdf4llm is not available. Markdown processing will not work.")
-        
+
         logger.info(f"PyMuPDF markdown processor initialized (pymupdf4llm available: {PYMUPDF4LLM_AVAILABLE})")
-    
+
     def can_process(self, doc_type: str) -> bool:
         """
         Check if PyMuPDF markdown processor can process the given document type.
-        
+
         Args:
             doc_type: Document type/extension (with or without dot)
-            
+
         Returns:
             True if processor can handle this document type
         """
         if not PYMUPDF4LLM_AVAILABLE:
             return False
-        
+
         if not doc_type:
             return False
-        
+
         # Normalize extension format
         if not doc_type.startswith('.'):
             doc_type = f'.{doc_type}'
-        
+
         doc_type = doc_type.lower()
-        
+
         can_process = doc_type in self.supported_formats
         logger.debug(f"Can process '{doc_type}' for markdown: {can_process}")
-        
+
         return can_process
-    
+
     def get_supported_formats(self) -> List[str]:
         """
         Get list of supported document formats for markdown processing.
-        
+
         Returns:
             List of supported file extensions
         """
         return self.supported_formats.copy()
-    
+
     def _read_pages(self, file_path: str, parallel: bool):
         if not PYMUPDF4LLM_AVAILABLE:
             raise PyMuPDFMarkdownError("Markdown extraction is unavailable")
@@ -134,17 +134,17 @@ class PyMuPDFMarkdownProcessor:
     def get_document_info(self, file_path: str) -> Dict[str, Any]:
         """
         Get document information for markdown processing.
-        
+
         Args:
             file_path: Path to the PDF file
-            
+
         Returns:
             Dictionary containing document information
         """
         doc = None
         try:
             doc = fitz.open(file_path)
-            
+
             info = {
                 'page_count': len(doc),
                 'is_encrypted': doc.is_encrypted,
@@ -154,7 +154,7 @@ class PyMuPDFMarkdownProcessor:
                 'file_name': Path(file_path).name,
                 'markdown_supported': PYMUPDF4LLM_AVAILABLE
             }
-            
+
             # Add page dimensions for first page if available
             if len(doc) > 0:
                 first_page = doc[0]
@@ -163,9 +163,9 @@ class PyMuPDFMarkdownProcessor:
                     'width': rect.width,
                     'height': rect.height
                 }
-            
+
             return info
-            
+
         except Exception as e:
             logger.error(f"Failed to get document info for {file_path}: {e}")
             return {
@@ -180,43 +180,43 @@ class PyMuPDFMarkdownProcessor:
                     doc.close()
                 except Exception as cleanup_error:
                     logger.warning(f"Failed to close document: {cleanup_error}")
-    
+
     def validate_document(self, file_path: str) -> Tuple[bool, str]:
         """
         Validate if PDF document can be processed for markdown extraction.
-        
+
         Args:
             file_path: Path to the PDF file
-            
+
         Returns:
             Tuple of (is_valid, error_message)
         """
         try:
             if not PYMUPDF4LLM_AVAILABLE:
                 return False, "pymupdf4llm is not available"
-            
+
             if not os.path.exists(file_path):
                 return False, "File does not exist"
-            
+
             if os.path.getsize(file_path) == 0:
                 return False, "File is empty"
-            
+
             # Try to open the document
             doc = None
             try:
                 doc = fitz.open(file_path)
-                
+
                 if doc.is_encrypted:
                     return False, "Document is encrypted"
-                
+
                 if len(doc) == 0:
                     return False, "Document has no pages"
-                
+
                 return True, "Document is valid for markdown processing"
-                
+
             finally:
                 if doc:
                     doc.close()
-                    
+
         except Exception as e:
             return False, f"Document validation failed: {str(e)}"

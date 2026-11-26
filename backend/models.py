@@ -150,23 +150,23 @@ class QuestionBatch(BaseModel):
         """Validate questions list with security checks."""
         if not v or not isinstance(v, list):
             raise ValueError('Questions list is required')
-        
+
         # Validate each question
         sanitized_questions = []
         for i, question in enumerate(v, 1):
             if not isinstance(question, str):
                 raise ValueError(f'Question {i} must be a string')
-            
+
             question = question.strip()
             if not question:
                 raise ValueError(f'Question {i} cannot be empty')
-            
+
             if len(question) > 1000:
                 raise ValueError(f'Question {i} exceeds maximum length of 1000 characters')
-            
+
             if len(question) < 3:
                 raise ValueError(f'Question {i} is too short (minimum 3 characters)')
-            
+
             # Basic security checks
             dangerous_patterns = [
                 '<script', 'javascript:', 'vbscript:', '<iframe', r'on\w+\s*=',
@@ -176,9 +176,9 @@ class QuestionBatch(BaseModel):
             for pattern in dangerous_patterns:
                 if re.search(pattern, question_lower):
                     raise ValueError(f'Question {i} contains potentially harmful content')
-            
+
             sanitized_questions.append(question)
-        
+
         return sanitized_questions
 
 

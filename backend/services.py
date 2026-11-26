@@ -208,21 +208,15 @@ class DocumentService:
                             # Return special indicator for oversized files instead of raising exception
                             return b"__FILE_TOO_LARGE__", "application/oversized"
 
-                    content = await response.read()
-
-                    # Double-check actual downloaded size
-                    actual_size_bytes = len(content)
-                    actual_size_mb = actual_size_bytes / (1024 * 1024)
-
-                    if actual_size_bytes > max_size_bytes:
-                        logger.warning(
-                            f"Downloaded document size ({actual_size_mb:.2f} MB) exceeds maximum allowed size ({Config.MAX_DOCUMENT_SIZE_MB} MB)"
-                        )
-                        # Return special indicator for oversized files instead of raising exception
-                        return b"__FILE_TOO_LARGE__", "application/oversized"
-
+                    buffer = bytearray()
+                    async for block in response.content.iter_chunked(1024 * 1024):
+                        if len(buffer) + len(block) > max_size_bytes:
+                            return b"__FILE_TOO_LARGE__", "application/oversized"
+                        buffer.extend(block)
+                    content = bytes(buffer)
+                    actual_size_mb = len(content) / (1024 * 1024)
                     logger.info(
-                        f"Successfully fetched document: {actual_size_mb:.2f} MB ({actual_size_bytes}) bytes, type: {content_type}"
+                        f"Successfully fetched document: {actual_size_mb:.2f} MB ({len(content)} bytes), type: {content_type}"
                     )
                     return content, content_type
 
