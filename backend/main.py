@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from backend.config import Config
 from backend import conversations
-from backend.models import HackRXRequest, HackRXResponse, ErrorResponse, ChatInput, DocumentProcessingResult
+from backend.models import HackRXRequest, HackRXResponse, ErrorResponse, ChatInput, DocumentProcessingResult, RagMode
 from backend.services import (
     DocumentService,
     VectorService,
@@ -193,10 +193,13 @@ async def hackrx_run(request: HackRXRequest):
     except Exception as exc:
         raise HTTPException(500, detail=ErrorResponse(error_type=type(exc).__name__, message=str(exc),
                             timestamp=datetime.now(timezone.utc).isoformat(), request_id=str(uuid.uuid4())).model_dump()) from exc
-    return await answer_document(document, request.questions)
+    return await answer_document(document, request.questions, request.rag_mode)
 
 
-async def answer_document(document_result: DocumentProcessingResult, questions: list[str]):
+async def answer_document(
+    document_result: DocumentProcessingResult, questions: list[str], rag_mode: RagMode = "fast",
+):
+    agentic = rag_mode == "agentic"
     request_id = str(uuid.uuid4())
     start_time = time.time()
     sanitized_questions = [sanitize_input(q) for q in questions]
@@ -232,7 +235,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
                     try:
                         # Use LLM service for image analysis
                         answer = await llm_service.generate_image_answer(
-                            question, temp_image_path
+                            question, temp_image_path, agentic=agentic,
                         )
                         return answer
                     finally:
@@ -332,6 +335,7 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
                         document_result.direct_gemini_content,
                         document_result.direct_gemini_content_type,
                         filename,
+                        agentic=agentic,
                     )
                     return answer
 
@@ -446,12 +450,13 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
 
             return HackRXResponse(answers=final_answers)
 
+        answer_question = rag_service.answer_agentic if agentic else rag_service.answer
         question_semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_REQUESTS)
 
         async def answer_indexed(question: str) -> str:
             async with question_semaphore:
                 try:
-                    return await rag_service.answer(question, document_result)
+                    return await answer_question(question, document_result)
                 except Exception:
                     logger.exception("Indexed question failed")
                     return "I apologize, but I encountered an error while processing this question. Please try again."
@@ -609,7 +614,7 @@ async def chat(request: Request, payload: str = Form(...), file: Optional[Upload
             questions = await asyncio.gather(*(resolve(q) for q in questions))
         except Exception as exc:
             raise HTTPException(502, "Could not resolve the follow-up. Try sending it again.") from exc
-    result = await answer_document(document, questions)
+    result = await answer_document(document, questions, chat_input.rag_mode)
     if any(answer.startswith("I apologize, but") for answer in result.answers):
         raise HTTPException(502, "The answer service could not finish. Check the provider settings or try again.")
     if not stored and document.namespace.startswith("doc_"):

@@ -10,11 +10,13 @@ import logging
 import asyncio
 import hashlib
 import itertools
+import json
 import mimetypes
 import aiohttp
 import tempfile
 import time
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse
 from datetime import datetime
@@ -3211,7 +3213,25 @@ class LLMService:
         # If all Groq keys failed, raise exception
         raise Exception("All Groq keys exhausted")
 
-    async def generate_image_answer(self, question: str, image_path: str) -> str:
+    async def _answer_attached(
+        self, prompt: str, question: str, complete: Callable[..., Awaitable[str]], *, agentic: bool,
+    ) -> str:
+        answer = await complete(prompt)
+        if not agentic:
+            return answer
+
+        review_prompt = Config.get_prompt(
+            "rag_verify_attachment",
+            payload=json.dumps({"question": question, "proposed_answer": answer}, ensure_ascii=False),
+        )
+        review = json.loads(await complete(review_prompt, json_response=True))
+        if not isinstance(review, dict) or type(review.get("supported")) is not bool:
+            raise ValueError("Invalid attachment verification response")
+        if review["supported"]:
+            return answer
+        return "I could not verify an answer from the attached source."
+
+    async def generate_image_answer(self, question: str, image_path: str, *, agentic: bool = False) -> str:
         """
         Generate answer to a question about an image using Gemini vision API.
         Bypasses vector database and relevance checking for direct image analysis.
@@ -3245,7 +3265,10 @@ class LLMService:
                 # Try Gemini first with vision capabilities
                 if self.gemini_key_manager and self.gemini_key_manager.api_keys:
                     try:
-                        return await self._try_gemini_vision_request(prompt, image)
+                        async def complete(prompt: str, *, json_response: bool = False) -> str:
+                            return await self._try_gemini_vision_request(prompt, image, json_response=json_response)
+
+                        return await self._answer_attached(prompt, question, complete, agentic=agentic)
                     except Exception as e:
                         logger.error(f"Gemini vision API failed: {e}")
                         return f"I apologize, but I encountered an error while analyzing the image: {str(e)}"
@@ -3256,7 +3279,7 @@ class LLMService:
                 logger.error(f"Image answer generation failed: {e}")
                 return f"I apologize, but I encountered an error while processing the image: {str(e)}"
 
-    async def _try_gemini_vision_request(self, prompt: str, image) -> str:
+    async def _try_gemini_vision_request(self, prompt: str, image, *, json_response: bool = False) -> str:
         """
         Try making a vision request to Gemini with image analysis.
 
@@ -3299,6 +3322,7 @@ class LLMService:
                         temperature=Config.GEMINI_TEMPERATURE,
                         top_p=Config.GEMINI_TOP_P,
                         max_output_tokens=Config.GEMINI_MAX_TOKENS,
+                        response_mime_type="application/json" if json_response else None,
                         thinking_config=types.ThinkingConfig(thinking_budget=0),
                         # No tools for image analysis
                     ),
@@ -3326,7 +3350,7 @@ class LLMService:
         raise Exception("All Gemini vision API keys exhausted")
 
     async def generate_direct_gemini_answer(
-        self, question: str, content: bytes, content_type: str, filename: str
+        self, question: str, content: bytes, content_type: str, filename: str, *, agentic: bool = False,
     ) -> str:
         """
         Generate answer to a question about a document using direct Gemini upload.
@@ -3359,9 +3383,13 @@ class LLMService:
                 # Try Gemini with document upload capabilities
                 if self.gemini_key_manager and self.gemini_key_manager.api_keys:
                     try:
-                        return await self._try_gemini_document_request(
-                            prompt, content, mime_type, filename
-                        )
+                        async def complete(prompt: str, *, json_response: bool = False) -> str:
+                            return await self._try_gemini_document_request(
+                                prompt, content, mime_type, filename,
+                                allow_flight_tool=not agentic, json_response=json_response,
+                            )
+
+                        return await self._answer_attached(prompt, question, complete, agentic=agentic)
                     except Exception as e:
                         logger.error(f"Gemini document API failed: {e}")
                         return f"I apologize, but I encountered an error while analyzing the document: {str(e)}"
@@ -3464,7 +3492,8 @@ class LLMService:
         return "text/plain"  # Changed from application/octet-stream to text/plain
 
     async def _try_gemini_document_request(
-        self, prompt: str, content: bytes, mime_type: str, filename: str
+        self, prompt: str, content: bytes, mime_type: str, filename: str,
+        *, allow_flight_tool: bool = True, json_response: bool = False,
     ) -> str:
         """
         Try making a document request to Gemini with direct document upload.
@@ -3495,17 +3524,20 @@ class LLMService:
                 document_part = types.Part.from_bytes(data=content, mime_type=mime_type)
 
                 # Create flight tool for new GenAI client
-                flight_tool_func = types.Tool(
-                    function_declarations=[
-                        types.FunctionDeclaration(
-                            name="get_flight_number",
-                            description="Gets the user's flight number by looking up their favorite city and finding the corresponding landmark, then retrieving the flight number from the appropriate API endpoint. Use this function whenever the user asks 'What is my flight number?' or any variation of asking for their flight number. DO NOT USE IT IN ANY OTHER INSTANCES.",
-                            parameters=types.Schema(
-                                type=types.Type.OBJECT, properties={}, required=[]
-                            ),
-                        )
-                    ]
-                )
+                tools = None
+                if allow_flight_tool:
+                    flight_tool = types.Tool(
+                        function_declarations=[
+                            types.FunctionDeclaration(
+                                name="get_flight_number",
+                                description="Gets the user's flight number by looking up their favorite city and finding the corresponding landmark, then retrieving the flight number from the appropriate API endpoint. Use this function whenever the user asks 'What is my flight number?' or any variation of asking for their flight number. DO NOT USE IT IN ANY OTHER INSTANCES.",
+                                parameters=types.Schema(
+                                    type=types.Type.OBJECT, properties={}, required=[]
+                                ),
+                            )
+                        ]
+                    )
+                    tools = [flight_tool]
 
                 # Make request with document, prompt, and flight tool
                 response = await asyncio.to_thread(
@@ -3517,12 +3549,13 @@ class LLMService:
                         top_p=Config.GEMINI_TOP_P,
                         max_output_tokens=Config.GEMINI_MAX_TOKENS,
                         thinking_config=types.ThinkingConfig(thinking_budget=0),
-                        tools=[flight_tool_func],
+                        tools=tools,
+                        response_mime_type="application/json" if json_response else None,
                     ),
                 )
 
                 # Check if Gemini wants to call the flight function
-                if response.candidates and response.candidates[0].content.parts:
+                if allow_flight_tool and response.candidates and response.candidates[0].content.parts:
                     for part in response.candidates[0].content.parts:
                         if hasattr(part, "function_call") and part.function_call:
                             if part.function_call.name == "get_flight_number":

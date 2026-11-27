@@ -4,7 +4,7 @@ All Pydantic models for API requests, responses, and internal data structures.
 
 Note - some of these are deprecated and not used.
 """
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 import re
@@ -142,7 +142,11 @@ class ErrorResponse(BaseModel):
 
 # HACKRX API MODELS
 
+RagMode = Literal["fast", "agentic"]
+
+
 class QuestionBatch(BaseModel):
+    rag_mode: RagMode = Field("fast", description="Fast retrieval or agentic retrieval and answer verification")
     questions: List[str] = Field(..., min_items=1, max_items=50, description="List of questions to answer")
 
     @validator('questions')
