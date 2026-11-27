@@ -1,4 +1,5 @@
 export type Source = { name: string; file?: File; url?: string };
+export type RagMode = "fast" | "agentic";
 export type Turn = { question: string; answer: string };
 export type Conversation = {
   id: string;
@@ -60,10 +61,10 @@ export function changeConversation(id: string, changes: { title?: string; pinned
 
 export const deleteConversation = (id: string) => request("conversations/" + id, { method: "DELETE" });
 
-export async function askSource(id: string, question: string, signal: AbortSignal) {
+export async function askSource(id: string, question: string, ragMode: RagMode, signal: AbortSignal) {
   const body = new FormData();
   body.set("conversation_id", id);
-  body.set("payload", JSON.stringify({ questions: [question] }));
+  body.set("payload", JSON.stringify({ questions: [question], rag_mode: ragMode }));
   const result = await request<{ conversation: Conversation }>("chat", { method: "POST", body, signal });
   if (!result?.conversation) throw new Error("The server returned an unreadable answer.");
   return result.conversation;

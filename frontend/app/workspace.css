@@ -30,7 +30,7 @@ body { margin: 0 }
 button, input, textarea { font: inherit }
 button { cursor: pointer; color: inherit; background: transparent; border: 0; }
 button:disabled { cursor: default }
-button:focus-visible, input:focus-visible, summary:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px }
+button:focus-visible, input:focus-visible, summary:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px }
 button:hover:not(:disabled) { filter: brightness(.93) }
 svg { width: 19px; height: 19px; stroke-width: 1.7; flex-shrink: 0 }
 h1, h2, p { margin: 0 }
@@ -184,7 +184,7 @@ input { border: 1px solid var(--border); border-radius: 6px; background: var(--s
 .source-caption { min-width: 0 }
 .source-description { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .source-caption h1 { font-size: 1.21rem; letter-spacing: -.035em; text-overflow: ellipsis; overflow: hidden; white-space: nowrap }
-.source-caption span, .composer-area > small { font-size: .84rem; color: var(--muted) }
+.source-caption span, .composer-options { font-size: .84rem; color: var(--muted) }
 .question-index { margin-left: auto; position: relative }
 .question-index summary { cursor: pointer; display: flex; align-items: center; gap: 5px; padding: 7px; list-style: none }
 .question-index summary::-webkit-details-marker { display: none }
@@ -233,8 +233,11 @@ input { border: 1px solid var(--border); border-radius: 6px; background: var(--s
 .composer textarea { flex: 1; border: 0; resize: none; min-height: 36px; max-height: 144px; padding: 4px; background: transparent }
 .send { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px }
 .send:disabled { background: var(--hover); color: var(--muted) }
-.composer-area > small { display:block; text-align:center; margin-top:6px }
-.composer-area > small span { margin: 0 5px }
+.composer-options { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px }
+.composer-options small { font-size: inherit }
+.composer-options small span { margin: 0 5px }
+.answer-mode { display: inline-flex; align-items: center; gap: 7px }
+.answer-mode select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 5px }
 .error { color: var(--danger); background: var(--danger-surface); padding: 10px 13px; border-radius: 7px; margin: 9px 0; line-height: 1.35 }
 dialog { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; width: min(460px, calc(100% - 30px)); padding: 0; color: var(--ink); max-height: 85dvh }
 dialog::backdrop { background: light-dark(#23345654, #080910a3) }
@@ -279,4 +282,4 @@ dialog::backdrop { background: light-dark(#23345654, #080910a3) }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior:auto !important; animation:none !important; transition:none !important } }
 
-@media (pointer: coarse) { .composer-area > small { display: none } }
+@media (pointer: coarse), (max-width: 520px) { .composer-options small { display: none } }

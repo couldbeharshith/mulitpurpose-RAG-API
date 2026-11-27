@@ -7,9 +7,9 @@ import remarkGfm from "remark-gfm";
 import { Mark, SourceArt } from "./art";
 import { ResizableSidebar } from "./sidebar";
 import { ThemeControl } from "./theme";
-import { accepted, api, ApiError, askSource, changeConversation, createConversation, deleteConversation, examples, isClip, listConversations, sizeLabel, type Conversation, type Source } from "./sources";
+import { accepted, api, ApiError, askSource, changeConversation, createConversation, deleteConversation, examples, isClip, listConversations, sizeLabel, type Conversation, type RagMode, type Source } from "./sources";
 
-type Chat = Conversation & { draft?: string; error?: string; pending?: string };
+type Chat = Conversation & { draft?: string; error?: string; pending?: string; ragMode?: RagMode };
 type Settings = { max_file_mb: number; direct_media_mb: number };
 
 function activityDate(value: string) {
@@ -190,7 +190,7 @@ export default function Workspace() {
     setOptionsId(null);
     update(id, { pending: question, draft: "", error: "" });
     try {
-      const result = await askSource(id, question, ctrl.signal);
+      const result = await askSource(id, question, chat.ragMode ?? "fast", ctrl.signal);
       update(id, { ...result, pending: undefined });
     } catch (e) {
       if ((e instanceof ApiError && e.status === 409) || ctrl.signal.aborted) {
@@ -361,7 +361,16 @@ export default function Workspace() {
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} />
             {chat.pending ? <button type="button" aria-label="Stop waiting for answer" className="send" onClick={() => requests.current.get(chat.id)?.abort()}><Square /></button>
               : <button className="send" aria-label="Send question" disabled={!chat.draft?.trim()}><Send /></button>}</form>
-          <small>Enter to send <span>/</span> Shift + Enter for a new line</small></div>
+          <div className="composer-options">
+            <label className="answer-mode">Answer mode
+              <select value={chat.ragMode ?? "fast"} disabled={!!chat.pending}
+                onChange={event => update(chat.id, { ragMode: event.target.value === "agentic" ? "agentic" : "fast" })}>
+                <option value="fast">Fast</option>
+                <option value="agentic">Agentic</option>
+              </select>
+            </label>
+            <small>Enter to send <span>/</span> Shift + Enter for a new line</small>
+          </div></div>
       </div>}
     </main>
     <dialog ref={dialog} className={panel === "navigation" ? "history-drawer" : undefined}
