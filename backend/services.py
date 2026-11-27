@@ -2885,7 +2885,12 @@ class LLMService:
             logger.error(f"Answer generation failed: {e}")
             return f"I apologize, but I encountered an error while processing your question: {str(e)}"
 
-    async def _make_request_with_fallback(self, prompt: str) -> str:
+    async def complete_rag_step(self, prompt: str) -> str:
+        """Run a tool-free, structured retrieval or verification step."""
+        async with self._semaphore:
+            return await self._make_request_with_fallback(prompt, json_response=True)
+
+    async def _make_request_with_fallback(self, prompt: str, *, json_response: bool = False) -> str:
         """
         Make LLM request with cycling through all Gemini keys first, then Groq fallback.
         Always tries Gemini first, uses Groq only when individual Gemini requests fail.
@@ -2899,7 +2904,7 @@ class LLMService:
         # Always try Gemini first (cycling through all keys)
         if self.gemini_key_manager and self.gemini_key_manager.api_keys:
             try:
-                return await self._try_gemini_request_with_cycling(prompt)
+                return await self._try_gemini_request_with_cycling(prompt, json_response=json_response)
             except Exception as e:
                 # If all Gemini keys fail, try Groq as fallback
                 if self.groq_key_manager and self.groq_key_manager.api_keys:
@@ -2917,7 +2922,7 @@ class LLMService:
         else:
             raise Exception("No API keys configured for any service")
 
-    async def _try_gemini_request_with_cycling(self, prompt: str) -> str:
+    async def _try_gemini_request_with_cycling(self, prompt: str, *, json_response: bool = False) -> str:
         """
         Try making request to Gemini cycling through all keys.
         For each individual request, if Gemini fails, immediately try Groq.
@@ -2941,6 +2946,7 @@ class LLMService:
                 config = types.GenerateContentConfig(
                     temperature=Config.GEMINI_TEMPERATURE,
                     top_p=Config.GEMINI_TOP_P,
+                    response_mime_type="application/json" if json_response else None,
                     max_output_tokens=Config.GEMINI_MAX_TOKENS,
                     thinking_config=(
                         types.ThinkingConfig(thinking_budget=0)
@@ -2966,6 +2972,8 @@ class LLMService:
                 try:
                     return gemini_answer(response)
                 except IncompleteAnswer:
+                    if json_response:
+                        raise
                     logger.warning("Gemini returned an incomplete answer. Retrying with concise bullets.")
                     response = await asyncio.to_thread(
                         client.models.generate_content,
@@ -2976,7 +2984,8 @@ class LLMService:
                     return gemini_answer(response)
 
             except IncompleteAnswer:
-                raise
+                if not json_response:
+                    raise
             except Exception as e:
                 # Add sleep after failed LLM call
                 await asyncio.sleep(0.5)
