@@ -30,9 +30,8 @@ from backend.services import (
     DocumentService,
     VectorService,
     LLMService,
-    RelevanceService,
-    QueryExpansionService,
 )
+from backend.rag import RagService
 from backend.utils import (
     sanitize_input,
     log_performance_metrics,
@@ -65,8 +64,7 @@ debug_mode = Config.DEBUG
 document_service = DocumentService()
 vector_service = VectorService()
 llm_service = LLMService()
-relevance_service = RelevanceService()
-query_expansion_service = QueryExpansionService()
+rag_service = RagService(vector_service, llm_service)
 
 
 # Define lifespan context manager
@@ -90,11 +88,6 @@ async def lifespan(app: FastAPI):
     config_summary = Config.get_config_summary()
     logger.debug("Application configuration: %s", config_summary)
 
-    # Initialize services
-    # Note: Relevance checking now uses document-based similarity only
-    logger.info(
-        "Services initialized - using document-based relevance checking and multi-query processing"
-    )
     logger.info(
         f"Direct Gemini upload enabled for supported file types < {Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB}MB (PDF, text, HTML, images, audio, video)"
     )
@@ -453,275 +446,21 @@ async def answer_document(document_result: DocumentProcessingResult, questions: 
 
             return HackRXResponse(answers=final_answers)
 
-        if document_result:
-            if document_result.cached:
-                logger.info(
-                    f"Using cached document from namespace: {document_result.namespace}"
-                )
-            else:
-                logger.info(
-                    f"Processed new document into namespace: {document_result.namespace} with {len(document_result.chunks)} chunks"
-                )
-
-        # Step 1: Batch process all relevance checks in parallel
-        logger.debug("Checking question relevance")
-        relevance_tasks = [
-            relevance_service.check_query_relevance(
-                question, i + 1, document_result.namespace, use_semaphore=False
-            )
-            for i, question in enumerate(sanitized_questions)
-        ]
-        relevance_results = await asyncio.gather(
-            *relevance_tasks, return_exceptions=True
-        )
-
-        # Step 2: Batch process query expansion for all relevant questions in parallel
-        logger.debug("Expanding queries for relevant questions")
-        expansion_tasks = []
-        question_to_expansion_map = {}
-
-        # Get available Groq keys for distribution
-        available_groq_keys = []
-        if (
-            query_expansion_service.groq_key_manager
-            and query_expansion_service.groq_key_manager.api_keys
-        ):
-            available_groq_keys = (
-                query_expansion_service.groq_key_manager.api_keys.copy()
-            )
-
-        for i, (question, relevance_result) in enumerate(
-            zip(sanitized_questions, relevance_results)
-        ):
-            if isinstance(relevance_result, Exception) or not relevance_result:
-                # Skip expansion for irrelevant questions
-                question_to_expansion_map[i] = [question]
-            else:
-                # Pre-assign API key to avoid lock contention
-                assigned_key = (
-                    available_groq_keys[i % len(available_groq_keys)]
-                    if available_groq_keys
-                    else None
-                )
-
-                # Create expansion task for relevant questions (without semaphore for batch processing)
-                expansion_tasks.append(
-                    (
-                        i,
-                        query_expansion_service._generate_with_groq_direct(
-                            question, assigned_key
-                        ),
-                    )
-                )
-
-        # Execute all expansion tasks in parallel
-        if expansion_tasks:
-            expansion_indices, expansion_coroutines = zip(*expansion_tasks)
-            expansion_results = await asyncio.gather(
-                *expansion_coroutines, return_exceptions=True
-            )
-
-            # Map results back to questions
-            for idx, result in zip(expansion_indices, expansion_results):
-                if isinstance(result, Exception):
-                    logger.debug(f"Query expansion failed for Q{idx + 1}: {result}")
-                    question_to_expansion_map[idx] = [sanitized_questions[idx]]
-                else:
-                    question_to_expansion_map[idx] = result
-
-        # Fill in any missing mappings
-        for i in range(len(sanitized_questions)):
-            if i not in question_to_expansion_map:
-                question_to_expansion_map[i] = [sanitized_questions[i]]
-
-        # Define async function to process individual questions
-        async def process_single_question(question: str, question_index: int) -> str:
-            """Enhanced question processing with pre-computed query expansion."""
-            question_start_time = time.time()
-
-            try:
-                logger.debug("Processing question %d", question_index + 1)
-
-                # Step 1: Use pre-computed relevance check
-                relevance_result = relevance_results[question_index]
-                if isinstance(relevance_result, Exception) or not relevance_result:
-                    logger.info(f"Q{question_index + 1}: Not relevant to document")
-                    return "This question is not relevant to the provided document content."
-
-                logger.debug(f"Question {question_index + 1} passed relevance check")
-
-                # Ensure namespace is ready for search (wait for indexing if needed)
-                if not document_result.cached:
-                    logger.debug(
-                        f"Checking if namespace {document_result.namespace} is ready for search..."
-                    )
-                    is_ready = await vector_service.is_namespace_ready(
-                        document_result.namespace,
-                        min_vectors=max(
-                            1, len(document_result.chunks) // 2
-                        ),  # At least half the chunks should be indexed
-                    )
-                    if not is_ready:
-                        logger.info(
-                            f"Namespace {document_result.namespace} not ready, waiting for indexing..."
-                        )
-                        await asyncio.sleep(1)  # Reduced wait time
-
-                # Step 2: Use pre-computed diverse queries
-                logger.debug("Retrieving context for question %d", question_index + 1)
-                diverse_queries = question_to_expansion_map[question_index]
-
-                # Step 3: Multi-query vector search with integrated reranking
-                final_chunks = []
-                if len(diverse_queries) > 1:
-                    # Use multi-query search (includes deduplication and reranking)
-                    try:
-                        final_chunks = await vector_service.search_multiple_queries(
-                            queries=diverse_queries,
-                            namespace=document_result.namespace,
-                            original_query=question,
-                            top_k=Config.PINECONE_TOP_K,
-                        )
-                    except Exception as e:
-                        logger.debug(
-                            f"Multi-query search failed for Q{question_index + 1}: {e}"
-                        )
-                        final_chunks = []
-
-                # Fallback to single query search if multi-query failed or returned no results
-                if not final_chunks:
-                    try:
-                        search_result = await vector_service.search_documents(
-                            query=question,
-                            namespace=document_result.namespace,
-                            use_semaphore=False,
-                        )
-                        # For single query, apply reranking if we have chunks
-                        if search_result.chunks:
-                            final_chunks = (
-                                await vector_service.rerank_chunks_with_original_query(
-                                    chunks=search_result.chunks, original_query=question
-                                )
-                            )
-                        else:
-                            final_chunks = []
-                        logger.debug(
-                            f"Single-query fallback: {len(final_chunks)} chunks for Q{question_index + 1}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Single-query search also failed for question {question_index + 1}: {e}"
-                        )
-                        final_chunks = []
-
-                # Check if we found any relevant chunks and retry if needed
-                if not final_chunks:
-                    logger.warning(
-                        f"No relevant chunks found for question {question_index + 1}, namespace may not be ready"
-                    )
-
-                    # If document was just processed (not cached), wait a bit more and retry once
-                    if not document_result.cached:
-                        logger.info(
-                            "Retrying search after additional wait for indexing..."
-                        )
-                        await asyncio.sleep(1)  # Reduced retry wait time
-
-                        # Retry with single query search
-                        try:
-                            search_result = await vector_service.search_documents(
-                                query=question,
-                                namespace=document_result.namespace,
-                                use_semaphore=False,
-                            )
-                            if search_result.chunks:
-                                final_chunks = await vector_service.rerank_chunks_with_original_query(
-                                    chunks=search_result.chunks, original_query=question
-                                )
-                            else:
-                                final_chunks = []
-                            logger.debug(
-                                f"Retry found {len(final_chunks)} relevant chunks"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Retry search failed for question {question_index + 1}: {e}"
-                            )
-                            final_chunks = []
-
-                # Step 5: LLM response generation (without semaphore for batch processing)
-                if final_chunks:
-                    try:
-                        answer = await llm_service.generate_answer(
-                            question=question,
-                            context_chunks=final_chunks,
-                            use_semaphore=False,
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"LLM answer generation failed for question {question_index + 1}: {e}"
-                        )
-                        answer = "I apologize, but I encountered an error while generating the answer. Please try rephrasing your question."
-                else:
-                    # Fallback when no chunks are found
-                    answer = "I could not find a passage that answers this question. Try a more specific term from the source."
-
-                question_time = time.time() - question_start_time
-                logger.debug(
-                    f"Question {question_index + 1} processed in {question_time:.2f}s"
-                )
-
-                return answer
-
-            except Exception as e:
-                question_time = time.time() - question_start_time
-                logger.error(
-                    f"Error processing question {question_index + 1} after {question_time:.2f}s: {e}"
-                )
-
-                # Return a user-friendly error message instead of exposing internal errors
-                return f"I apologize, but I encountered an error while processing this question. Please try rephrasing your question."
-
-        # Process all questions concurrently using asyncio.gather
-        logger.info(
-            f"Starting parallel processing of {len(sanitized_questions)} questions"
-        )
-
-        # Create a semaphore to limit concurrent question processing
         question_semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_REQUESTS)
 
-        async def process_question_with_semaphore(
-            question: str, question_index: int
-        ) -> str:
-            """Wrapper to process question with semaphore control."""
+        async def answer_indexed(question: str) -> str:
             async with question_semaphore:
-                return await process_single_question(question, question_index)
+                try:
+                    return await rag_service.answer(question, document_result)
+                except Exception:
+                    logger.exception("Indexed question failed")
+                    return "I apologize, but I encountered an error while processing this question. Please try again."
 
-        # Create tasks for parallel execution of all questions
-        question_tasks = [
-            process_question_with_semaphore(question, i)
-            for i, question in enumerate(sanitized_questions)
-        ]
-
-        # Execute all questions in parallel with proper exception handling
-        processed_answers = await asyncio.gather(
-            *question_tasks, return_exceptions=True
-        )
-
-        # Create final answers array
-        final_answers = []
-        successful_questions = 0
-
-        # Fill in processed answers
-        for i, answer in enumerate(processed_answers):
-            if isinstance(answer, Exception):
-                logger.error(f"Question {i+1} failed with exception: {answer}")
-                final_answers.append(
-                    f"I apologize, but I encountered an error while processing this question. Please try rephrasing your question."
-                )
-            else:
-                final_answers.append(answer)
-                successful_questions += 1
+        unique_questions = dict.fromkeys(sanitized_questions)
+        answers = await asyncio.gather(*(answer_indexed(question) for question in unique_questions))
+        by_question = dict(zip(unique_questions, answers))
+        final_answers = [by_question[question] for question in sanitized_questions]
+        successful_questions = sum(not answer.startswith("I apologize, but") for answer in final_answers)
 
         processing_time = time.time() - start_time
 
