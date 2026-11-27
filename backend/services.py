@@ -467,7 +467,8 @@ class DocumentService:
         return await self.process_bytes(content, content_type, filename, vector_service)
 
     async def process_bytes(self, content: bytes, content_type: str, filename: str,
-                            vector_service: "VectorService" = None) -> DocumentProcessingResult:
+                            vector_service: "VectorService" = None,
+                            workspace: bool = False) -> DocumentProcessingResult:
         start_time = datetime.utcnow()
         try:
             # Check if file is too large
@@ -530,18 +531,22 @@ class DocumentService:
                 content_type, filename
             )
 
-            long_pdf = False
-            if doc_type == "pdf" and Config.USE_MARKDOWN_EXTRACTION:
-                def has_more_than_ten_pages():
+            paged_pdf = False
+            if doc_type == "pdf" and (Config.USE_MARKDOWN_EXTRACTION or workspace):
+                def should_index_pdf():
                     with fitz.open(stream=content, filetype="pdf") as pdf:
-                        return len(pdf) > 10
+                        if Config.USE_MARKDOWN_EXTRACTION and len(pdf) > 10:
+                            return True
+                        return workspace and not pdf.is_encrypted and any(page.get_text().strip() for page in pdf)
 
-                long_pdf = await asyncio.to_thread(has_more_than_ten_pages)
+                paged_pdf = await asyncio.to_thread(should_index_pdf)
 
+            workspace_text = workspace and doc_type == "txt" and content_type.startswith("text/")
             if (
                 file_size_mb < Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB
                 and is_gemini_supported_type
-                and not long_pdf
+                and not paged_pdf
+                and not workspace_text
             ):
                 logger.info(
                     f"File size ({file_size_mb:.2f}MB) is below threshold ({Config.DIRECT_GEMINI_UPLOAD_THRESHOLD_MB}MB) and type ({content_type}) is Gemini-supported, using direct Gemini upload for: {filename}"
@@ -592,8 +597,10 @@ class DocumentService:
             # Generate document hash for caching (SHA-256 with first 16 chars)
             doc_hash = self.generate_document_hash(content)
             namespace = self.generate_namespace_from_hash(doc_hash)
-            if long_pdf:
+            if paged_pdf and Config.USE_MARKDOWN_EXTRACTION:
                 namespace += "_markdown_pages_v1"
+            elif paged_pdf:
+                namespace += "_text_pages_v1"
 
             logger.info(f"Document hash: {doc_hash}, namespace: {namespace}")
 

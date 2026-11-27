@@ -1,17 +1,24 @@
 """Local workspace conversations and their original sources."""
 
 import os
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
 from typing import BinaryIO
 from uuid import UUID, uuid4
+from zipfile import BadZipFile
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
+import fitz
+from openpyxl import load_workbook
+from pptx import Presentation
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.config import Config
+from backend.evidence import Passage
 from backend.models import HackRXRequest
 
 
@@ -30,6 +37,9 @@ class ConversationSource(BaseModel):
 class SavedTurn(BaseModel):
     question: str
     answer: str
+    citations: list[Passage] = Field(default_factory=list)
+    search_question: str | None = None
+    namespace: str | None = None
 
 
 class Conversation(BaseModel):
@@ -126,6 +136,61 @@ def read_source(conversation_id: UUID) -> bytes:
             return (directory / str(conversation_id) / "source").read_bytes()
         except FileNotFoundError as exc:
             raise HTTPException(410, "The saved source file is missing.") from exc
+
+
+def save_link_snapshot(conversation_id: UUID, data: bytes, content_type: str) -> tuple[ConversationSource, bool]:
+    with lock:
+        conversation = get_conversation(conversation_id)
+        path = directory / str(conversation_id) / "source"
+        created = not path.exists()
+        if created:
+            try:
+                path.write_bytes(data)
+                conversation.source.content_type = content_type
+                conversation.source.size = len(data)
+                save_conversation(conversation)
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+        return conversation.source, created
+
+
+def preview_source(conversation_id: UUID, item: int = 1):
+    conversation = get_conversation(conversation_id)
+    if item < 1:
+        raise HTTPException(422, "Choose a page, sheet, or slide greater than zero.")
+    data = read_source(conversation_id)
+    name = conversation.source.name.lower()
+    try:
+        if data.startswith(b"%PDF"):
+            with fitz.open(stream=data, filetype="pdf") as pdf:
+                if not pdf.is_encrypted and item <= len(pdf):
+                    page = pdf[item - 1]
+                    scale = min(2, 1400 / max(page.rect.width, page.rect.height, 1))
+                    png = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes("png")
+                    return Response(png, media_type="image/png", headers={"X-Preview-Count": str(len(pdf))})
+        elif name.endswith(".xlsx") or "spreadsheetml" in conversation.source.content_type:
+            workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
+            try:
+                if item <= len(workbook.worksheets):
+                    sheet = workbook.worksheets[item - 1]
+                    rows = [[str(value)[:240] if value is not None else "" for value in row]
+                            for row in sheet.iter_rows(max_row=40, max_col=min(sheet.max_column or 12, 12), values_only=True)]
+                    return {"kind": "sheet", "count": len(workbook.worksheets), "title": sheet.title,
+                            "rows": rows, "limited": (sheet.max_row or 0) > 40 or (sheet.max_column or 0) > 12}
+            finally:
+                workbook.close()
+        elif name.endswith(".pptx") or "presentationml" in conversation.source.content_type:
+            slides = Presentation(BytesIO(data)).slides
+            if item <= len(slides):
+                slide = slides[item - 1]
+                text = [shape.text for shape in slide.shapes if shape.has_text_frame and shape.text.strip()]
+                return {"kind": "slide", "count": len(slides), "title": f"Slide {item}", "text": "\n\n".join(text)}
+        else:
+            raise HTTPException(415, "This source format does not have a page preview.")
+    except (RuntimeError, OSError, ValueError, KeyError, BadZipFile) as exc:
+        raise HTTPException(422, "Could not render this source.") from exc
+    raise HTTPException(404, "This page, sheet, or slide is unavailable.")
 
 
 def append_turns(conversation_id: UUID, expected_count: int, turns: list[SavedTurn],

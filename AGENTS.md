@@ -29,7 +29,7 @@ docker run --rm --env-file .env -p 7860:7860 -v plexrag-history:/app/chat-data p
 ## Runtime Dependencies
 
 - `API_KEY` authenticates `Authorization: Bearer <token>`. Startup also requires at least one populated `GEMINI_API_KEY_n` and one `GROQ_API_KEY_n`. One slot per provider suffices. Gemini handles direct media requests, and Groq handles query expansion and fallback text generation.
-- Pinecone needs `PINECONE_API_KEY` and an existing `PINECONE_INDEX_NAME` with integrated embeddings mapped to the `text` field. `Config.validate_required_config` also requires `PINECONE_HOST_URL`, although the clients open the index by name. Importing `backend.main` initializes these clients before lifespan validation, even for direct Gemini requests.
+- Pinecone needs `PINECONE_API_KEY` and an existing `PINECONE_INDEX_NAME` with integrated embeddings mapped to the `text` field. `Config.validate_required_config` also requires `PINECONE_HOST_URL`, although the clients open the index by name. Importing `backend.main` initializes these clients before lifespan validation, even for direct Gemini requests. 
 - Optional reranking uses `PINECONE_RERANKER_API_KEY_n` or `COHERE_API_KEY_n`. If rerankers are unavailable, retrieval keeps the first `PINECONE_RERANK_TOP_N` candidates. Tesseract with English language data enables OCR on slide images. Docker installs it.
 
 ## Architecture

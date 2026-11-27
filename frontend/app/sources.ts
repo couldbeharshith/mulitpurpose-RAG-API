@@ -1,5 +1,14 @@
 export type Source = { name: string; file?: File; url?: string };
-export type Turn = { question: string; answer: string };
+export type Passage = { id: number; text: string; kind: "page" | "slide" | "sheet" | "passage"; location: number | null };
+export type OpenCitation = (passage: Passage | undefined, missingReference?: number, turnIndex?: number) => void;
+export const citationMarker = /[\[【［]\s*source\s*[:：]\s*([0-9０-９]{1,5})\s*[\]】］]/gi;
+export type EvidenceAnswer = { answer: string; citations?: Passage[] };
+export type Turn = EvidenceAnswer & { question: string };
+export type ChatStage = "reading" | "searching" | "writing";
+export type SourcePreview =
+  | { kind: "page"; count: number; url: string }
+  | { kind: "sheet"; count: number; title: string; rows: string[][]; limited: boolean }
+  | { kind: "slide"; count: number; title: string; text: string };
 export type Conversation = {
   id: string;
   title: string;
@@ -60,11 +69,61 @@ export function changeConversation(id: string, changes: { title?: string; pinned
 
 export const deleteConversation = (id: string) => request("conversations/" + id, { method: "DELETE" });
 
-export async function askSource(id: string, question: string, signal: AbortSignal) {
+export function passageLabel(passage: Passage) {
+  if (!passage.location) return "Passage " + passage.id;
+  const labels = { page: "Page", slide: "Slide", sheet: "Sheet", passage: "Passage" };
+  return labels[passage.kind] + " " + passage.location;
+}
+
+export const verifyAnswer = (id: string, index: number, signal: AbortSignal) =>
+  request<EvidenceAnswer>("conversations/" + id + "/turns/" + index + "/verify", { method: "POST", signal });
+
+export async function readPreview(id: string, item: number, signal: AbortSignal): Promise<SourcePreview> {
+  const response = await fetch(api + "/api/v1/conversations/" + id + "/preview?item=" + item, { signal });
+  if (!response.ok) {
+    const result = await response.json().catch(() => null);
+    throw new ApiError(response.status, typeof result?.detail === "string" ? result.detail : "Could not open the source preview.");
+  }
+  if (response.headers.get("Content-Type")?.startsWith("image/png")) {
+    const count = Number(response.headers.get("X-Preview-Count")) || item;
+    return { kind: "page", count, url: URL.createObjectURL(await response.blob()) };
+  }
+  return response.json();
+}
+
+type ChatEvent =
+  | { type: "stage"; stage: ChatStage }
+  | { type: "result"; data: { conversation: Conversation } }
+  | { type: "error"; message: string; status: number };
+
+export async function askSource(id: string, question: string, signal: AbortSignal,
+                                onStage: (stage: ChatStage) => void) {
   const body = new FormData();
   body.set("conversation_id", id);
   body.set("payload", JSON.stringify({ questions: [question] }));
-  const result = await request<{ conversation: Conversation }>("chat", { method: "POST", body, signal });
-  if (!result?.conversation) throw new Error("The server returned an unreadable answer.");
-  return result.conversation;
+  const response = await fetch(api + "/api/v1/chat?stream=true", { method: "POST", body, signal });
+  if (!response.ok || !response.body) {
+    const result = await response.json().catch(() => null);
+    throw new ApiError(response.status, typeof result?.detail === "string" ? result.detail : "Could not start this answer.");
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let pending = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const lines = (pending + value).split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event: ChatEvent = JSON.parse(line);
+        if (event.type === "stage") onStage(event.stage);
+        if (event.type === "error") throw new ApiError(event.status, event.message);
+        if (event.type === "result" && event.data.conversation) return event.data.conversation;
+      }
+    }
+    throw new Error("The connection closed before the answer arrived. Try again.");
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
 }

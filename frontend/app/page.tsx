@@ -1,16 +1,21 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowDown, AudioLines, BookOpen, Check, ChevronDown, ChevronRight, CircleHelp, Clipboard, FileText, FolderOpen, Link2, List, Menu, MessagesSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Send, Square, Table2, Upload, X } from "lucide-react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Answer } from "./answer";
 import { Mark, SourceArt } from "./art";
+import { AnswerCheck, SourceDrawer } from "./evidence";
 import { ResizableSidebar } from "./sidebar";
 import { ThemeControl } from "./theme";
-import { accepted, api, ApiError, askSource, changeConversation, createConversation, deleteConversation, examples, isClip, listConversations, sizeLabel, type Conversation, type Source } from "./sources";
+import { accepted, api, ApiError, askSource, changeConversation, citationMarker, createConversation, deleteConversation, examples, isClip, listConversations, passageLabel, sizeLabel, type ChatStage, type Conversation, type Passage, type Source } from "./sources";
 
-type Chat = Conversation & { draft?: string; error?: string; pending?: string };
+type Chat = Conversation & { draft?: string; error?: string; pending?: string; stage?: ChatStage };
 type Settings = { max_file_mb: number; direct_media_mb: number };
+const stageLabels: Record<ChatStage, string> = {
+  reading: "Preparing your source",
+  searching: "Searching for relevant passages",
+  writing: "Writing the answer",
+};
 
 function activityDate(value: string) {
   const date = new Date(value);
@@ -59,8 +64,12 @@ export default function Workspace() {
   const [manageBusy, setManageBusy] = useState(false);
   const [manageError, setManageError] = useState("");
   const [awayFromLatest, setAwayFromLatest] = useState(false);
+  const [sourcePreview, setSourcePreview] = useState<{
+    passage?: Passage; missingReference?: number; turnIndex?: number; sequence: number;
+  }>();
   const managedChat = chats.find(c => c.id === managedId);
   const dialog = useRef<HTMLDialogElement>(null);
+  const sourceOpener = useRef<HTMLElement | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const thread = useRef<HTMLDivElement>(null);
@@ -131,6 +140,7 @@ export default function Workspace() {
     followLatest.current = true;
     setAwayFromLatest(false);
     setActive(id); setPanel(null); setSourceError(""); setOptionsId(null);
+    setSourcePreview(undefined);
     try {
       if (id) sessionStorage.setItem("plexrag-active-chat", id);
       else sessionStorage.removeItem("plexrag-active-chat");
@@ -188,10 +198,10 @@ export default function Workspace() {
     requests.current.set(id, ctrl);
     followLatest.current = true; setAwayFromLatest(false);
     setOptionsId(null);
-    update(id, { pending: question, draft: "", error: "" });
+    update(id, { pending: question, stage: undefined, draft: "", error: "" });
     try {
-      const result = await askSource(id, question, ctrl.signal);
-      update(id, { ...result, pending: undefined });
+      const result = await askSource(id, question, ctrl.signal, stage => update(id, { stage }));
+      update(id, { ...result, pending: undefined, stage: undefined });
     } catch (e) {
       if ((e instanceof ApiError && e.status === 409) || ctrl.signal.aborted) {
         const latest = await listConversations().catch(() => []);
@@ -201,12 +211,22 @@ export default function Workspace() {
       const error = ctrl.signal.aborted ? "Request stopped. Your question is ready to edit." :
         e instanceof TypeError ? "Could not reach the API. Check the server connection and try again." :
         e instanceof Error ? e.message : "Could not finish the answer. Try again.";
-      update(id, { pending: undefined, draft: question, error });
+      update(id, { pending: undefined, stage: undefined, draft: question, error });
     } finally { requests.current.delete(id); }
   }
   function startPrompt(q: string) {
     if (chat) update(chat.id, { draft: q, error: "" });
     composer.current?.focus();
+  }
+  const showSource = useCallback((passage?: Passage, missingReference?: number, turnIndex?: number) => {
+    const trigger = document.activeElement;
+    if (trigger instanceof HTMLElement && !trigger.closest(".source-drawer")) sourceOpener.current = trigger;
+    setSourcePreview(current => ({ passage, missingReference, turnIndex, sequence: (current?.sequence ?? 0) + 1 }));
+  }, []);
+  function closeSource() {
+    const opener = sourceOpener.current;
+    setSourcePreview(undefined);
+    requestAnimationFrame(() => { if (opener?.isConnected) opener.focus({ preventScroll: true }); });
   }
   function syncScroll() {
     const element = thread.current;
@@ -309,22 +329,30 @@ export default function Workspace() {
     </ResizableSidebar>
     <main className="main">
       <header className={"topbar" + (chat ? " conversation-bar" : "")} data-rail-collapsed={collapsed}>
-        <button className="mobile-toggle icon-btn" aria-label="Open conversations" onClick={() => setPanel("navigation")}><Menu /></button>
-        {chat ? <>
-          <div className="conversation-source">
-            <div className="source-icon">{chat.source.url ? <Link2 /> : <FileText />}</div>
-            <div className="source-caption">
-              <h1 id="conversation-title" tabIndex={-1} title={chat.title}>{chat.title}</h1>
-              <span className="source-description" title={chat.source.name}>{chat.source.name}{chat.source.size != null ? " / " + sizeLabel(chat.source.size) : ""}</span>
+        <div className="topbar-inner">
+          <button className="mobile-toggle icon-btn" aria-label="Open conversations" onClick={() => setPanel("navigation")}><Menu /></button>
+          {chat ? <>
+            <div className="conversation-source">
+              <span className="source-icon" aria-hidden="true">
+                {chat.source.url ? <Link2 /> : <FileText />}
+              </span>
+              <div className="source-caption">
+                <h1 id="conversation-title" tabIndex={-1} title={chat.title}>{chat.title}</h1>
+                <span className="source-description" title={chat.source.name}>{chat.source.name}{chat.source.size != null ? " / " + sizeLabel(chat.source.size) : ""}</span>
+              </div>
             </div>
-          </div>
-          {chat.turns.length > 0 && <details className="question-index" key={chat.id}><summary aria-label="Questions"><List /><span>Questions</span><ChevronDown /></summary><div>{chat.turns.map((t,i) =>
-            <button key={i} onClick={e => { e.currentTarget.closest("details")?.removeAttribute("open"); document.getElementById("turn-"+i)?.scrollIntoView({block:"start"}); }}>{t.question}</button>)}</div></details>}
-        </> : <>
-          <button className="mobile-brand" onClick={() => select(null)} aria-label="PlexRAG home"><Mark />PlexRAG</button>
-          <span className="crumb"><FolderOpen />Workspace</span>
-        </>}
-        <ThemeControl /></header>
+            {chat.turns.length > 0 && <details className="question-index" key={chat.id}><summary aria-label="Questions"><List /><span>Questions</span><ChevronDown /></summary><div>{chat.turns.map((t,i) =>
+              <button key={i} onClick={e => { e.currentTarget.closest("details")?.removeAttribute("open"); document.getElementById("turn-"+i)?.scrollIntoView({block:"start"}); }}>{t.question}</button>)}</div></details>}
+            <button className="preview-trigger" onClick={() => showSource()}>
+              <BookOpen />{chat.source.name.toLowerCase().endsWith(".pdf") ? "Preview PDF" : "Preview source"}
+            </button>
+          </> : <>
+            <button className="mobile-brand" onClick={() => select(null)} aria-label="PlexRAG home"><Mark />PlexRAG</button>
+            <span className="crumb"><FolderOpen />Workspace</span>
+          </>}
+          <ThemeControl />
+        </div>
+      </header>
       {!chat ? <div className="landing-scroll"><div className="landing">
         <section className="intro"><div><h1 id="intake-title" tabIndex={-1}>Open a source.</h1><p>Bring a document, a dataset, or a link.<br />Ask questions and follow the details.</p></div><SourceArt /></section>
         <section className="intake" aria-label="Choose your source">
@@ -348,10 +376,19 @@ export default function Workspace() {
           {!chat.turns.length && !chat.pending && <section className="chat-start"><Mark /><h2>What would you like to know?</h2><p>Ask about this source, then follow up as you read.</p>
             <div className="suggestions">{[chat.starter || "Summarize the key points.", "Which details deserve a closer look?"].map(q => <button onClick={() => startPrompt(q)} key={q}>{q}</button>)}</div></section>}
           {chat.turns.map((t,i) => <article id={"turn-"+i} className="exchange" key={i}><p className="user-message">{t.question}</p><div className="answer-name"><Mark />PlexRAG</div>
-            <div className="answer"><Markdown remarkPlugins={[remarkGfm]} components={{img: () => null}}>{t.answer}</Markdown></div><CopyAnswer answer={t.answer} /></article>)}
+            <Answer content={t.answer} citations={t.citations} onCitation={showSource} turnIndex={i} />
+            <div className="answer-actions">
+              <CopyAnswer answer={t.answer.replace(citationMarker, (_, id) => {
+                const number = Number(id.normalize("NFKC"));
+                const passage = t.citations?.find(item => item.id === number);
+                return passage ? "(" + passageLabel(passage) + ")" : "(Source " + number + ")";
+              })} />
+              <AnswerCheck id={chat.id} index={i} onCitation={showSource} />
+            </div>
+          </article>)}
           {chat.pending && <article className="exchange"><p className="user-message">{chat.pending}</p><div className="thinking" role="status">
             <span className="scan-mark"><Mark /></span>
-            <span>{chat.turns.length ? "Working on your follow-up" : "Working through your source"}<span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></span>
+            <span>{chat.stage ? stageLabels[chat.stage] : "Sending question"}<span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></span>
           </div></article>}
           </div></div>
         <div className="composer-area">{awayFromLatest && <button className="jump-latest" onClick={jumpToLatest}><ArrowDown />Jump to latest</button>}{chat.error && <p className="error" role="alert">{chat.error}</p>}
@@ -364,6 +401,9 @@ export default function Workspace() {
           <small>Enter to send <span>/</span> Shift + Enter for a new line</small></div>
       </div>}
     </main>
+    {chat && sourcePreview && <SourceDrawer key={chat.id + "-" + sourcePreview.sequence}
+      id={chat.id} name={chat.source.name} passage={sourcePreview.passage}
+      missingReference={sourcePreview.missingReference} turnIndex={sourcePreview.turnIndex} onCitation={showSource} close={closeSource} />}
     <dialog ref={dialog} className={panel === "navigation" ? "history-drawer" : undefined}
       onCancel={event => { if (manageBusy) event.preventDefault(); else setPanel(null); }}
       onClose={() => { setPanel(null); setOptionsId(null); }} aria-labelledby="dialog-title"
