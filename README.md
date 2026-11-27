@@ -51,6 +51,7 @@ For live reload, run `python start.py` from the repository root. The launcher st
 
 - Choose a file, drop one into the workspace, paste a direct HTTP(S) link, or open a bundled sample. Processing starts with the first question.
 - Each conversation has one source. Open another conversation to explore a different file. Switch between them in the sidebar. Use the question tabs beneath the active source, or **Questions** on mobile, to jump to an earlier exchange.
+- Choose **Fast** or **Agentic** under **Answer mode** before sending a question. New conversations and page reloads start in Fast.
 - The first successful answer gives the conversation a title. Use its sidebar menu to rename, pin, or delete it. The UI sends one question per turn. The API uses the eight most recent exchanges, with up to 4,000 characters per previous answer, to resolve follow-ups before searching the source.
 - The server saves transcripts and uploaded files in the git-ignored `chat-data/` folder. Browsers connected to the same server share this history. Chats and uploads survive a reload or restart. In Docker, keep the history volume mounted across runs. Deleting a conversation removes the local transcript and upload. Content-indexed chunks in Pinecone are shared by identical sources and have a separate lifecycle.
 
@@ -64,17 +65,23 @@ For live reload, run `python start.py` from the repository root. The launcher st
 | Images | Supported images use Gemini vision. |
 | Audio and video | Small supported clips use direct Gemini analysis under `DIRECT_GEMINI_UPLOAD_THRESHOLD_MB` (default 0.5 MB). For longer recordings, use a transcript. Long-form audio/video indexing and timestamp retrieval are future work. |
 
-For indexed documents, PlexRAG splits extracted content with tiktoken, stores records in a content-addressed Pinecone namespace, expands search queries, combines matching chunks, optionally reranks them, and sends the selected context to the answer model. Long PDFs have a versioned namespace so older plain-text indexes do not mask the new extraction. Repeated identical content can reuse an existing index.
+For indexed documents, PlexRAG splits extracted content with tiktoken and stores passages in a content-addressed Pinecone namespace. Repeated identical content can reuse the index. Long PDFs have a versioned namespace for Markdown extraction.
+
+## Answer modes
+
+- **Fast (default)** searches an indexed source once with the question, optionally reranks the matches, and generates an answer from the selected passages. The relevance threshold, when enabled, uses scores from that same search. Direct sources use a single answer step.
+- **Agentic** starts with the same source search. If the passages are insufficient, it can run up to three targeted searches in one additional round. It checks that cited quotations occur in the source and asks a separate model call to verify the draft against the evidence. Approved answers include passage references and available page, slide, or sheet numbers. For sources analyzed directly, the verifier reviews the full attachment. If the evidence does not support an answer, Agentic reports the gap. Extra searches and verification can take longer.
 
 ## API
 
 ### Batch questions from a URL
 
-`POST /api/v1/hackrx/run` accepts one HTTP(S) source URL and **1–50 questions** of 3–1,000 characters. Answers follow input order.
+`POST /api/v1/hackrx/run` accepts one HTTP(S) source URL and **1–50 questions** of 3–1,000 characters. Answers follow input order. Both answer endpoints accept optional `rag_mode` values `"fast"` and `"agentic"`. Omitting it selects Fast.
 
 ```json
 {
   "documents": "https://example.org/materials-report.pdf",
+  "rag_mode": "agentic",
   "questions": [
     "Which materials were compared?",
     "How was humidity controlled during the trial?"
@@ -91,7 +98,7 @@ The response has the form `{"answers": ["First answer", "Second answer"]}`.
 ```sh
 curl http://localhost:7860/api/v1/chat \
   -F 'file=@report.pdf' \
-  -F 'payload={"questions":["What are the main findings?"],"history":[]}'
+  -F 'payload={"questions":["What are the main findings?"],"history":[],"rag_mode":"agentic"}'
 ```
 
 The response contains `answers` and a nullable `source_id`. Each item in `history` contains a `question` and its `answer`. Indexed sources can reuse their handle. Directly analyzed sources are supplied on each turn. A stale handle returns HTTP 410 and can be replaced by sending the original source again.
